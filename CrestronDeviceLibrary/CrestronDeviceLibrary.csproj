@@ -91,6 +91,8 @@
   <ItemGroup>
     <None Include="packages.config" />
     <None Include="Samples\CAM_SONY_VISCA.usp" />
+    <None Include="Samples\AudioMatrix_StageCraft.usp" />
+    <None Include="Samples\Biamp_Tesira.usp" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <Import Project="..\packages\Crestron.SimplSharp.SDK.Library.2.21.274\build\Crestron.SimplSharp.SDK.Library.targets" Condition="Exists('..\packages\Crestron.SimplSharp.SDK.Library.2.21.274\build\Crestron.SimplSharp.SDK.Library.targets')" />
