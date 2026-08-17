@@ -1,0 +1,110 @@
+/*******************************************************************************************
+  模块名称: VedioMatrix_DIGBIRD
+  功能说明: DIGBIRD视频矩阵切换控制模块（40x40）
+  优化内容:
+    1. 清理未使用的注释模板、空函数骨架和无效代码块
+    2. 修正断开路由时输出按钮反馈未刷新的问题
+    3. 精简代码结构，添加清晰的中文注释
+  通讯协议: RS232, 115200, 8, 1, N
+*******************************************************************************************/
+
+#SYMBOL_NAME "VedioMatrix_DIGBIRD"
+#DEFINE_CONSTANT InputCount 40
+#DEFINE_CONSTANT OutputCount 40
+#CATEGORY "23"
+#DEFAULT_VOLATILE
+#ENABLE_STACK_CHECKING
+#ENABLE_TRACE
+
+/*******************************************************************************************
+  输入输出定义（与原始接口保持一致，确保.ush文件兼容）
+*******************************************************************************************/
+DIGITAL_INPUT _skip_,MatrxInputBtn[InputCount],_skip_;
+DIGITAL_INPUT _Skip_,MatrxOutputBtn[OutputCount],_skip_;
+
+DIGITAL_OUTPUT _skip_,MatrxInputFb[InputCount],_skip_;
+DIGITAL_OUTPUT _skip_,MatrxOutputFb[OutputCount],_skip_;
+
+STRING_OUTPUT _skip_,ToDevice$,_skip_;
+
+STRING_PARAMETER _skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,
+_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,
+_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_;
+
+/*******************************************************************************************
+  全局变量
+*******************************************************************************************/
+INTEGER MatrxStaus[OutputCount];
+INTEGER MatrxIn;
+
+/*******************************************************************************************
+  辅助函数：刷新输出按钮反馈状态
+  说明: 根据MatrxStaus数组，将当前选中输入对应的输出反馈置1，其余置0
+*******************************************************************************************/
+Function RefreshBtnFeedBack()
+{
+   INTEGER loop;
+   
+   FOR(loop = 1 TO OutputCount)
+   {
+        IF(MatrxStaus[loop] = MatrxIn)
+            MatrxOutputFb[loop] = 1;
+        ELSE
+            MatrxOutputFb[loop] = 0;
+   }    
+}
+
+/*******************************************************************************************
+  辅助函数：发送矩阵切换命令
+  说明: 命令格式为 (输入,输出,1,D,B)，同时将该输出反馈置1
+*******************************************************************************************/
+Function SetMatrxBase(INTEGER in, INTEGER out)
+{
+    ToDevice$ = "(" + itoa(in) + "," + itoa(out) + ",1,D,B)";
+    MatrxOutputFb[out] = 1;
+}
+
+/*******************************************************************************************
+  事件：输入通道选择
+  说明: 按下输入按钮后，记录当前输入编号，点亮该输入反馈，并刷新所有输出反馈
+*******************************************************************************************/
+PUSH MatrxInputBtn
+{
+    MatrxIn = GetLastModifiedArrayIndex();
+    SetArray(MatrxInputFb, 0);
+    MatrxInputFb[MatrxIn] = 1;
+    RefreshBtnFeedBack();
+}
+
+/*******************************************************************************************
+  事件：输出通道选择
+  说明: 
+    - 若当前输出已连接到选中输入，则断开连接（MatrxStaus置0）
+    - 否则建立路由，并发送切换命令
+    - 最后统一刷新输出按钮反馈状态
+*******************************************************************************************/
+PUSH MatrxOutputBtn
+{
+    INTEGER n;
+    
+    n = GetLastModifiedArrayIndex();
+    
+    IF(MatrxStaus[n] = MatrxIn)
+    {
+        MatrxStaus[n] = 0;
+    }
+    ELSE
+    {
+        MatrxStaus[n] = MatrxIn;
+        SetMatrxBase(MatrxIn, n);
+    }
+    
+    RefreshBtnFeedBack();
+}
+
+/*******************************************************************************************
+  Main函数：系统启动时执行一次
+*******************************************************************************************/
+Function Main()
+{
+}

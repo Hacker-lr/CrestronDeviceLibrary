@@ -1,0 +1,438 @@
+/*******************************************************************************************
+  模块名称: AudioMatrx_IPS_Libra
+  功能说明: IPS Libra音频矩阵控制模块（16x16，支持混音路由、增益调节、场景调用）
+  优化内容:
+    1. 清理未使用的注释模板、空函数骨架和无效代码块
+    2. 修正内部函数名拼写错误（GetMatrxStaus → GetMatrxStatus）
+    3. 移除重复的增益读取调用和多余的cancelallwait
+    4. 简化输入输出路由事件逻辑，移除无效空分支
+    5. 精简代码结构，添加清晰的中文注释
+  通讯协议: UDP, 端口50000
+*******************************************************************************************/
+
+#SYMBOL_NAME "AudioMatrx_IPS_Libra"
+#DEFINE_CONSTANT INputaudio 16
+#DEFINE_CONSTANT OUTputaudio 16
+#DEFAULT_VOLATILE
+#ENABLE_STACK_CHECKING
+#ENABLE_TRACE
+
+/*******************************************************************************************
+  输入输出定义（与原始接口保持一致，确保.ush文件兼容）
+*******************************************************************************************/
+DIGITAL_INPUT mixpage_fb, mixin_button_fb, mixout_button_fb;
+DIGITAL_INPUT INmute[INputaudio], _skip_;
+DIGITAL_INPUT OUTmute[INputaudio], _skip_;
+
+DIGITAL_OUTPUT INmuteFb[OUTputaudio], _skip_;
+DIGITAL_OUTPUT OUTmuteFb[OUTputaudio], _skip_;
+
+DIGITAL_INPUT changjing[16];
+DIGITAL_INPUT Matrx_IN_audio_jia[INputaudio], _skip_, Matrx_IN_audio_jian[INputaudio], _skip_;
+DIGITAL_INPUT Matrx_OUT_audio_jia[OUTputaudio], _skip_, Matrx_OUT_audio_jian[OUTputaudio], _skip_;
+
+DIGITAL_INPUT _skip_, MatrxInputBtn[INputaudio], _skip_;
+DIGITAL_INPUT _Skip_, MatrxOutputBtn[INputaudio], _skip_;
+
+DIGITAL_OUTPUT changjing_fb[16];
+DIGITAL_OUTPUT _skip_, MatrxInputFb[OUTputaudio], _skip_;
+DIGITAL_OUTPUT _skip_, MatrxOutputFb[OUTputaudio], _skip_;
+
+STRING_OUTPUT audio_tx;
+STRING_OUTPUT audio_tx2;
+STRING_OUTPUT level_tx[32];
+
+BUFFER_INPUT audio_rx[100];
+BUFFER_INPUT audio_rx2[100];
+
+/*******************************************************************************************
+  全局变量
+*******************************************************************************************/
+INTEGER MatrxIn;
+INTEGER MatrxOut;
+INTEGER inlevel$[INputaudio];
+INTEGER outlevel$[OUTputaudio];
+
+/*******************************************************************************************
+  辅助函数：输入通道静音/开启
+*******************************************************************************************/
+Function inputmute(INTEGER in)
+{
+    audio_tx = "set:input#mute#" + itoa(in - 1) + "#1";
+}
+
+Function inputopen(INTEGER in)
+{
+    audio_tx = "set:input#mute#" + itoa(in - 1) + "#0";
+}
+
+/*******************************************************************************************
+  辅助函数：输出通道静音/开启
+*******************************************************************************************/
+Function outputmute(INTEGER in)
+{
+    audio_tx = "set:output#mute#" + itoa(in - 1) + "#1";
+}
+
+Function outputopen(INTEGER in)
+{
+    audio_tx = "set:output#mute#" + itoa(in - 1) + "#0";
+}
+
+/*******************************************************************************************
+  辅助函数：建立/断开混音路由
+*******************************************************************************************/
+Function SetMatrxBaseOn(INTEGER in, INTEGER out)
+{
+    audio_tx2 = "set:mixer#switch#" + itoa(in - 1) + "#" + itoa(out - 1) + "#1";
+}
+
+Function SetMatrxBaseOff(INTEGER in, INTEGER out)
+{
+    audio_tx2 = "set:mixer#switch#" + itoa(in - 1) + "#" + itoa(out - 1) + "#0";
+}
+
+/*******************************************************************************************
+  辅助函数：获取指定输入的混音路由状态
+  说明: 发送查询指令 get:mixer#switch#输入#0-15，解析回传数据后更新输出反馈
+*******************************************************************************************/
+Function GetMatrxStatus(INTEGER in)
+{
+    STRING mixBuf$[16];
+    STRING check$[30];
+    INTEGER i;
+    INTEGER n;
+    INTEGER startpos;
+    INTEGER checklen;
+
+    ClearBuffer(audio_rx);
+
+    audio_tx = "get:mixer#switch#" + itoa(in - 1) + "#0-15";
+    check$ = "get:mixer#switch#" + itoa(in - 1) + "#0-15";
+    delay(10);
+
+    IF(find(check$, audio_rx))
+    {
+        startpos = len(check$) + 2;
+
+        FOR(n = 1 TO 16)
+        {
+            checklen = find("#", mid(audio_rx, startpos, len(audio_rx)));
+            mixBuf$ = mid(audio_rx, startpos, checklen);
+
+            IF(find("1", mixBuf$))
+                MatrxOutputFb[n] = 1;
+            ELSE IF(find("0", mixBuf$))
+                MatrxOutputFb[n] = 0;
+
+            startpos = startpos + checklen;
+        }
+    }
+}
+
+/*******************************************************************************************
+  辅助函数：读取指定输入通道静音状态
+  说明: 注意：回传字符串固定位置解析（第18或19字节），依赖设备回文格式
+*******************************************************************************************/
+Function readinmute(INTEGER count)
+{
+    ClearBuffer(audio_rx);
+    audio_tx = "get:input#mute#" + itoa(count - 1);
+    delay(10);
+
+    IF(count <= 9)
+        INmuteFb[count] = ATOI(MID(audio_rx, 18, 1));
+    ELSE
+        INmuteFb[count] = ATOI(MID(audio_rx, 19, 1));
+}
+
+/*******************************************************************************************
+  辅助函数：读取指定输出通道静音状态
+*******************************************************************************************/
+Function readoutmute(INTEGER count)
+{
+    ClearBuffer(audio_rx);
+    audio_tx = "get:output#mute#" + itoa(count - 1);
+    delay(10);
+
+    IF(count <= 9)
+        OUTmuteFb[count] = ATOI(MID(audio_rx, 18, 1));
+    ELSE
+        OUTmuteFb[count] = ATOI(MID(audio_rx, 19, 1));
+}
+
+/*******************************************************************************************
+  辅助函数：批量读取所有输入静音状态
+  说明: 回传数据格式为 get:input#mute#0-15#1#0#1...，按固定步长解析
+*******************************************************************************************/
+Function readallinmute()
+{
+    STRING check$[30];
+    INTEGER checklen;
+    INTEGER i;
+
+    ClearBuffer(audio_rx);
+    audio_tx = "get:input#mute#0-15";
+    check$ = "get:input#mute#0-15";
+    checklen = len(check$);
+
+    delay(50);
+
+    FOR(i = 1 TO 16)
+    {
+        checklen = checklen + 2;
+        INmuteFb[i] = atoi(mid(audio_rx, checklen, 1));
+    }
+}
+
+/*******************************************************************************************
+  辅助函数：批量读取所有输出静音状态
+*******************************************************************************************/
+Function readalloutmute()
+{
+    STRING check$[30];
+    INTEGER checklen;
+    INTEGER i;
+
+    ClearBuffer(audio_rx);
+    audio_tx = "get:output#mute#0-15";
+    check$ = "get:output#mute#0-15";
+    checklen = len(check$);
+
+    delay(50);
+
+    FOR(i = 1 TO 16)
+    {
+        checklen = checklen + 2;
+        OUTmuteFb[i] = atoi(mid(audio_rx, checklen, 1));
+    }
+}
+
+/*******************************************************************************************
+  辅助函数：读取输入增益并更新UI字符串
+*******************************************************************************************/
+Function readingain()
+{
+    INTEGER i;
+    INTEGER startpos;
+    STRING checkstart$[20];
+    STRING gain$[10];
+
+    FOR(i = 1 TO 16)
+    {
+        checkstart$ = "get:input#gain#" + itoa(i - 1) + "#";
+        startpos = find(checkstart$, audio_rx2);
+
+        IF(startpos)
+        {
+            gain$ = MID(audio_rx2, startpos + 20, 4);
+
+            IF(ATOI(gain$) > 400)
+                level_tx[i] = "<FONT size=" + "\x22" + "38" + "\x22" + " face=" + "\x22" + "Arial Unicode MS" + "\x22" + " color=" + "\x22" + "#ffffff" + "\x22" + ">" + itoa(i) + ": " + itoa(ATOI(gain$) / 100) + "dB";
+            ELSE
+                level_tx[i] = "<FONT size=" + "\x22" + "38" + "\x22" + " face=" + "\x22" + "Arial Unicode MS" + "\x22" + " color=" + "\x22" + "#ffffff" + "\x22" + ">" + itoa(i) + ": -" + itoa((10000 - ATOI(gain$)) / 100) + "dB";
+        }
+    }
+}
+
+/*******************************************************************************************
+  辅助函数：读取输出增益并更新UI字符串
+*******************************************************************************************/
+Function readoutgain()
+{
+    INTEGER i;
+    INTEGER startpos;
+    STRING checkstart$[20];
+    STRING gain$[10];
+
+    FOR(i = 1 TO 16)
+    {
+        checkstart$ = "get:output#gain#" + itoa(i - 1) + "#";
+        startpos = find(checkstart$, audio_rx2);
+
+        IF(startpos)
+        {
+            gain$ = MID(audio_rx2, startpos + 21, 4);
+
+            IF(ATOI(gain$) > 400)
+                level_tx[i + 16] = "<FONT size=" + "\x22" + "38" + "\x22" + " face=" + "\x22" + "Arial Unicode MS" + "\x22" + " color=" + "\x22" + "#ffffff" + "\x22" + ">" + itoa(i) + ": " + itoa(ATOI(gain$) / 100) + "dB";
+            ELSE
+                level_tx[i + 16] = "<FONT size=" + "\x22" + "38" + "\x22" + " face=" + "\x22" + "Arial Unicode MS" + "\x22" + " color=" + "\x22" + "#ffffff" + "\x22" + ">" + itoa(i) + ": -" + itoa((10000 - ATOI(gain$)) / 100) + "dB";
+        }
+    }
+}
+
+/*******************************************************************************************
+  事件：输入通道静音切换
+*******************************************************************************************/
+PUSH INmute
+{
+    INTEGER mutein;
+
+    mutein = GetLastModifiedArrayIndex();
+
+    IF(INmuteFb[mutein] = 0)
+        inputmute(mutein);
+    ELSE
+        inputopen(mutein);
+
+    readinmute(mutein);
+}
+
+/*******************************************************************************************
+  事件：输出通道静音切换
+*******************************************************************************************/
+PUSH OUTmute
+{
+    INTEGER muteout;
+
+    muteout = GetLastModifiedArrayIndex();
+
+    IF(OUTmuteFb[muteout] = 0)
+        outputmute(muteout);
+    ELSE
+        outputopen(muteout);
+
+    readoutmute(muteout);
+}
+
+/*******************************************************************************************
+  事件：输入通道选择
+  说明: 选中输入后，清除所有输出反馈，查询该输入的混音路由状态
+*******************************************************************************************/
+PUSH MatrxInputBtn
+{
+    MatrxIn = GetLastModifiedArrayIndex();
+    SetArray(MatrxInputFb, 0);
+    MatrxInputFb[MatrxIn] = 1;
+
+    SetArray(MatrxOutputFb, 0);
+    GetMatrxStatus(MatrxIn);
+}
+
+/*******************************************************************************************
+  事件：输出通道选择
+  说明: 切换当前输入与指定输出的混音连接状态
+*******************************************************************************************/
+PUSH MatrxOutputBtn
+{
+    INTEGER n;
+
+    n = GetLastModifiedArrayIndex();
+    MatrxOut = n;
+
+    IF(MatrxOutputFb[n] = 0)
+    {
+        SetMatrxBaseOn(MatrxIn, MatrxOut);
+        MatrxOutputFb[n] = 1;
+    }
+    ELSE
+    {
+        SetMatrxBaseOff(MatrxIn, MatrxOut);
+        MatrxOutputFb[n] = 0;
+    }
+}
+
+/*******************************************************************************************
+  事件：输入增益增加
+*******************************************************************************************/
+PUSH Matrx_IN_audio_jia
+{
+    INTEGER incount;
+
+    incount = GetLastModifiedArrayIndex();
+    inlevel$[incount] = inlevel$[incount] + 1;
+
+    audio_tx2 = "set:input#step#" + itoa(incount - 1) + "#1";
+    delay(20);
+    audio_rx2 = "";
+    readingain();
+}
+
+/*******************************************************************************************
+  事件：输入增益减少
+*******************************************************************************************/
+PUSH Matrx_IN_audio_jian
+{
+    INTEGER incount;
+
+    incount = GetLastModifiedArrayIndex();
+    inlevel$[incount] = inlevel$[incount] - 1;
+
+    audio_tx2 = "set:input#step#" + itoa(incount - 1) + "#-1";
+    audio_rx2 = "";
+    delay(20);
+    readingain();
+}
+
+/*******************************************************************************************
+  事件：输出增益增加
+*******************************************************************************************/
+PUSH Matrx_OUT_audio_jia
+{
+    INTEGER outcount;
+
+    outcount = GetLastModifiedArrayIndex();
+    outlevel$[outcount] = outlevel$[outcount] + 1;
+
+    audio_tx2 = "set:output#step#" + itoa(outcount - 1) + "#1";
+    audio_rx2 = "";
+    delay(20);
+    readoutgain();
+}
+
+/*******************************************************************************************
+  事件：输出增益减少
+*******************************************************************************************/
+PUSH Matrx_OUT_audio_jian
+{
+    INTEGER outcount;
+
+    outcount = GetLastModifiedArrayIndex();
+    outlevel$[outcount] = outlevel$[outcount] - 1;
+
+    audio_tx2 = "set:output#step#" + itoa(outcount - 1) + "#-1";
+    audio_rx2 = "";
+    delay(20);
+    readoutgain();
+}
+
+/*******************************************************************************************
+  事件：场景调用
+  说明: 发送场景切换指令 scene:toggle#N（N为0-15）
+*******************************************************************************************/
+PUSH changjing
+{
+    INTEGER n;
+
+    n = GetLastModifiedArrayIndex();
+    audio_tx2 = "scene:toggle#" + itoa(n - 1);
+}
+
+/*******************************************************************************************
+  事件：页面/按钮状态变化时刷新数据
+  说明: 根据当前激活的输入/输出页面，读取增益或静音状态
+*******************************************************************************************/
+CHANGE mixpage_fb, mixin_button_fb, mixout_button_fb
+{
+    IF(mixin_button_fb)
+    {
+        readingain();
+        readallinmute();
+    }
+
+    IF(mixout_button_fb)
+    {
+        readoutgain();
+        readalloutmute();
+    }
+}
+
+/*******************************************************************************************
+  Main函数：系统启动时执行一次
+*******************************************************************************************/
+Function Main()
+{
+    MatrxIn = 1;
+    MatrxOut = 1;
+}

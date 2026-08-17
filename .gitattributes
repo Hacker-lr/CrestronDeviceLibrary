@@ -1,0 +1,17 @@
+# SIMPL+ 源文件必须保持 CRLF（LF 会导致 SIMPL+ 编译器行为异常）
+*.usp text eol=crlf
+*.ush text eol=crlf
+
+# SIMPL Windows 二进制/半二进制文件不做任何行尾转换
+*.smw -text
+*.sm2 -text
+*.sig -text
+*.sgd -text
+*.sgd2 -text
+*.dip -text
+
+# C# / 常规文本
+*.cs  text eol=crlf
+*.csproj text eol=crlf
+*.config text eol=crlf
+*.md  text eol=crlf

@@ -1,0 +1,130 @@
+/*******************************************************************************************
+  模块名称: CAM_SONY_VISCA（C# 版薄壳）
+  功能说明: Sony VISCA 摄像机控制。所有逻辑已搬进 C# 库 ViscaController，
+            本文件只做"引脚 <-> C# 方法/委托"的接线，不再含任何 VISCA 组包逻辑。
+  接口说明: 引脚定义与原 CAM_SONY_VISCA.usp 完全一致，.ush 不用改。
+  库引用  : #USER_SIMPLSHARP_LIBRARY 的名字要和编译出的 .clz 文件名一致（不含扩展名）。
+*******************************************************************************************/
+
+#SYMBOL_NAME "CAM_SONY_VISCA"
+#DEFAULT_VOLATILE
+#ENABLE_STACK_CHECKING
+#ENABLE_TRACE
+
+#USER_SIMPLSHARP_LIBRARY "RoomLibrary"
+
+// ---------------- 输入输出（与原宏一致） ----------------
+DIGITAL_INPUT    _SKIP_,Set_Addr,CAMERA1,CAMERA2,CAMERA3,CAMERA4,CAMERA5,CAMERA6,CAMERA7,speed1,speed2,preset;
+DIGITAL_INPUT    up,down,leftt,rightt,zoomin,zoomout,recall1,recall2,recall3,recall4,recall5,recall6,recall7,recall8,recall9,recall10,recall11,recall12;
+DIGITAL_INPUT    AI_Track_on,AI_Track_off;
+
+BUFFER_INPUT CAM_rx$[8][10];
+
+DIGITAL_OUTPUT _SKIP_,_SKIP_,CAMERA1_fb,CAMERA2_fb,CAMERA3_fb,CAMERA4_fb,CAMERA5_fb;
+DIGITAL_OUTPUT CAMERA6_fb,CAMERA7_fb,speed1_fb,speed2_fb,preset_fb;
+DIGITAL_OUTPUT _SKIP_,_SKIP_,_SKIP_,_SKIP_,_SKIP_,_SKIP_,recall1_fb,recall2_fb,recall3_fb,recall4_fb,recall5_fb,recall6_fb,recall7_fb,recall8_fb,recall9_fb,recall10_fb,recall11_fb,recall12_fb;
+DIGITAL_OUTPUT AI_Track_on_fb,AI_Track_off_fb;
+
+STRING_OUTPUT CAM_tx$[8];
+
+// ---------------- 库对象 ----------------
+ViscaController visca;
+
+// ---------------- 主函数：绑定两个输出委托 ----------------
+Function Main()
+{
+    RegisterDelegate(visca, SendTx, fnSendTx);   // C# 推包 -> CAM_tx$[cam]
+    RegisterDelegate(visca, SetFb,  fnSetFb);    // C# 推反馈 -> 对应 _fb 引脚
+    WaitForInitializationComplete();
+}
+
+// ---------------- 摄像机选择 ----------------
+PUSH CAMERA1 { visca.SelectCamera(1); }
+PUSH CAMERA2 { visca.SelectCamera(2); }
+PUSH CAMERA3 { visca.SelectCamera(3); }
+PUSH CAMERA4 { visca.SelectCamera(4); }
+PUSH CAMERA5 { visca.SelectCamera(5); }
+PUSH CAMERA6 { visca.SelectCamera(6); }
+PUSH CAMERA7 { visca.SelectCamera(7); }
+
+// ---------------- 云台速度 ----------------
+PUSH speed1 { visca.SetSpeed(1); }
+PUSH speed2 { visca.SetSpeed(2); }
+
+// ---------------- 变焦 ----------------
+PUSH    zoomin         { visca.Zoom(1); }
+PUSH    zoomout        { visca.Zoom(2); }
+RELEASE zoomin,zoomout { visca.ZoomStop(); }
+
+// ---------------- 云台方向 ----------------
+PUSH    up     { visca.PanTilt(1); }
+PUSH    down   { visca.PanTilt(2); }
+PUSH    leftt  { visca.PanTilt(3); }
+PUSH    rightt { visca.PanTilt(4); }
+RELEASE up,down,leftt,rightt { visca.PanTiltStop(); }
+
+// ---------------- 预置位 ----------------
+PUSH preset { visca.EnterPresetSave(); }
+
+PUSH recall1  { visca.Recall(1);  }
+PUSH recall2  { visca.Recall(2);  }
+PUSH recall3  { visca.Recall(3);  }
+PUSH recall4  { visca.Recall(4);  }
+PUSH recall5  { visca.Recall(5);  }
+PUSH recall6  { visca.Recall(6);  }
+PUSH recall7  { visca.Recall(7);  }
+PUSH recall8  { visca.Recall(8);  }
+PUSH recall9  { visca.Recall(9);  }
+PUSH recall10 { visca.Recall(10); }
+PUSH recall11 { visca.Recall(11); }
+PUSH recall12 { visca.Recall(12); }
+
+// ---------------- AI 追踪 ----------------
+PUSH AI_Track_on  { visca.AiTrack(1); }
+PUSH AI_Track_off { visca.AiTrack(0); }
+
+// ---------------- 串口接收 ----------------
+// 注：VISCA 应答解析（ProcessRx）暂缓接入——BUFFER_INPUT 数组的 CHANGE 写法待确认后再加，不影响摄像机控制。
+
+// =====================================================================
+//  回调：C# 发包 -> 写到对应摄像机的 CAM_tx$[cam]
+// =====================================================================
+CALLBACK FUNCTION fnSendTx(INTEGER cam, STRING pkt$)
+{
+    CAM_tx$[cam] = pkt$;
+}
+
+// =====================================================================
+//  回调：C# 反馈 -> 路由到对应 _fb 引脚（id 与 ViscaController 里 FB_* 对应）
+// =====================================================================
+CALLBACK FUNCTION fnSetFb(INTEGER id, INTEGER v)
+{
+    // 摄像机反馈 1..7
+    if      (id=1) CAMERA1_fb=v;
+    else if (id=2) CAMERA2_fb=v;
+    else if (id=3) CAMERA3_fb=v;
+    else if (id=4) CAMERA4_fb=v;
+    else if (id=5) CAMERA5_fb=v;
+    else if (id=6) CAMERA6_fb=v;
+    else if (id=7) CAMERA7_fb=v;
+    // 速度/模式
+    else if (id=10) speed1_fb=v;
+    else if (id=11) speed2_fb=v;
+    else if (id=12) preset_fb=v;
+    // 预置位反馈 20..31
+    else if (id=20) recall1_fb=v;
+    else if (id=21) recall2_fb=v;
+    else if (id=22) recall3_fb=v;
+    else if (id=23) recall4_fb=v;
+    else if (id=24) recall5_fb=v;
+    else if (id=25) recall6_fb=v;
+    else if (id=26) recall7_fb=v;
+    else if (id=27) recall8_fb=v;
+    else if (id=28) recall9_fb=v;
+    else if (id=29) recall10_fb=v;
+    else if (id=30) recall11_fb=v;
+    else if (id=31) recall12_fb=v;
+    // AI 追踪反馈
+    else if (id=40) AI_Track_on_fb=v;
+    else if (id=41) AI_Track_off_fb=v;
+}

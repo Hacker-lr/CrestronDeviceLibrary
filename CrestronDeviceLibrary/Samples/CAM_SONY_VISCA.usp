@@ -1,0 +1,101 @@
+/*******************************************************************************************
+  示例：Sony VISCA 摄像机控制 - SIMPL+ 薄壳
+  说明：逻辑全在 C# 库 CrestronDeviceLibrary 的 SonyViscaCamera 里，本文件只做引脚接线。
+  规则（见 skill）：行尾必须 CRLF；SIMPL+ 无 new（声明即实例化）；类名用简单名即可。
+  库引用：文件名须与 #USER_SIMPLSHARP_LIBRARY 一致（CrestronDeviceLibrary.clz）。
+*******************************************************************************************/
+
+#SYMBOL_NAME "CAM_SONY_VISCA"
+#DEFAULT_VOLATILE
+#ENABLE_TRACE
+
+#USER_SIMPLSHARP_LIBRARY "CrestronDeviceLibrary"
+
+// ---------------- 输入引脚 ----------------
+DIGITAL_INPUT    _SKIP_,CAMERA1,CAMERA2,CAMERA3,CAMERA4,CAMERA5,CAMERA6,CAMERA7,speed1,speed2,preset;
+DIGITAL_INPUT    up,down,leftt,rightt,zoomin,zoomout,recall1,recall2,recall3,recall4,recall5,recall6,recall7,recall8,recall9,recall10,recall11,recall12;
+DIGITAL_INPUT    AI_Track_on,AI_Track_off;
+
+BUFFER_INPUT CAM_rx$[8][10];
+
+// ---------------- 输出引脚 ----------------
+DIGITAL_OUTPUT _SKIP_,_SKIP_,CAMERA1_fb,CAMERA2_fb,CAMERA3_fb,CAMERA4_fb,CAMERA5_fb;
+DIGITAL_OUTPUT CAMERA6_fb,CAMERA7_fb,speed1_fb,speed2_fb,preset_fb;
+DIGITAL_OUTPUT _SKIP_,_SKIP_,_SKIP_,_SKIP_,_SKIP_,_SKIP_,recall1_fb,recall2_fb,recall3_fb,recall4_fb,recall5_fb,recall6_fb,recall7_fb,recall8_fb,recall9_fb,recall10_fb,recall11_fb,recall12_fb;
+DIGITAL_OUTPUT AI_Track_on_fb,AI_Track_off_fb;
+
+STRING_OUTPUT CAM_tx$[8];
+
+// ---------------- 库对象（声明即实例化，不要写 new） ----------------
+SonyViscaCamera visca;
+
+// ---------------- 主函数：绑定输出委托 ----------------
+Function Main()
+{
+    RegisterDelegate(visca, SendTx,       fnSendTx);    // C# 推命令包 -> CAM_tx$[cam]
+    RegisterDelegate(visca, ReportStatus, fnStatus);    // C# 推状态 -> 对应 _fb 引脚
+    WaitForInitializationComplete();
+}
+
+// ---------------- 摄像机选择 ----------------
+PUSH CAMERA1 { visca.Select(1); }
+PUSH CAMERA2 { visca.Select(2); }
+PUSH CAMERA3 { visca.Select(3); }
+PUSH CAMERA4 { visca.Select(4); }
+PUSH CAMERA5 { visca.Select(5); }
+PUSH CAMERA6 { visca.Select(6); }
+PUSH CAMERA7 { visca.Select(7); }
+
+// ---------------- 云台速度 ----------------
+PUSH speed1 { visca.SetSpeed(1); }
+PUSH speed2 { visca.SetSpeed(2); }
+
+// ---------------- 变焦 ----------------
+PUSH    zoomin         { visca.ZoomIn(); }
+PUSH    zoomout        { visca.ZoomOut(); }
+RELEASE zoomin,zoomout { visca.ZoomStop(); }
+
+// ---------------- 云台方向 ----------------
+PUSH    up     { visca.PanTilt(1); }
+PUSH    down   { visca.PanTilt(2); }
+PUSH    leftt  { visca.PanTilt(3); }
+PUSH    rightt { visca.PanTilt(4); }
+RELEASE up,down,leftt,rightt { visca.PanTiltStop(); }
+
+// ---------------- 预置位 ----------------
+PUSH preset { visca.PresetSave(); }
+
+PUSH recall1  { visca.Recall(1);  }
+PUSH recall2  { visca.Recall(2);  }
+PUSH recall3  { visca.Recall(3);  }
+PUSH recall4  { visca.Recall(4);  }
+PUSH recall5  { visca.Recall(5);  }
+PUSH recall6  { visca.Recall(6);  }
+PUSH recall7  { visca.Recall(7);  }
+PUSH recall8  { visca.Recall(8);  }
+PUSH recall9  { visca.Recall(9);  }
+PUSH recall10 { visca.Recall(10); }
+PUSH recall11 { visca.Recall(11); }
+PUSH recall12 { visca.Recall(12); }
+
+// ---------------- AI 追踪 ----------------
+PUSH AI_Track_on  { visca.AiTrack(1); }
+PUSH AI_Track_off { visca.AiTrack(0); }
+
+// =====================================================================
+//  回调：C# 发命令包 -> 写到对应摄像机的 CAM_tx$[cam]
+// =====================================================================
+CALLBACK FUNCTION fnSendTx(INTEGER cam, STRING pkt$)
+{
+    CAM_tx$[cam] = pkt$;
+}
+
+// =====================================================================
+//  回调：C# 状态回报 -> 路由到 _fb 引脚（id 与 SonyViscaCamera 的 Fb* 常量对应）
+// =====================================================================
+CALLBACK FUNCTION fnStatus(INTEGER id, INTEGER v)
+{
+    if      (id=1) CAMERA1_fb=v;       // 摄像机地址：1..7 分别点亮对应 _fb
+    else if (id=2) speed1_fb=v;        // 速度（简化为 speed1_fb 显示）
+    else if (id=3) preset_fb=v;        // 预置位保存模式
+}

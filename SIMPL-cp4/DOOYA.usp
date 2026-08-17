@@ -1,0 +1,252 @@
+/*******************************************************************************************
+  模块名称: DOOYA
+  功能说明: 杜亚(DOOYA)窗帘电机控制模块
+  通讯协议: RS485总线协议（私有协议）
+  串口参数: 波特率9600, 1停止位, 无奇偶校验
+  命令格式: 55 ID_L ID_H Len Cmd [Data] CRC_L CRC_H
+    55    = 帧头
+    ID_L  = 设备地址低字节
+    ID_H  = 设备地址高字节
+    Len   = 数据长度（不含帧头和校验）
+    Cmd   = 命令码
+    Data  = 可选数据
+    CRC   = 16位CRC校验（低位在前，高位在后）
+  命令码定义:
+    0x01 = 正转（开）
+    0x02 = 反转（关）
+    0x03 = 停止
+    0x04 = 百分比控制
+    0x02 = 设置地址（特殊）
+  参数说明:
+    ID_L: 设备地址低字节（默认0x01）
+    ID_H: 设备地址高字节（默认0x01）
+    MOTOR: 电机类型（1=单电机, 2=双电机）
+  支持功能: 窗帘开启、关闭、停止、百分比定位、地址设置
+*******************************************************************************************/
+
+#SYMBOL_NAME "DOOYA"
+#DEFAULT_VOLATILE
+#ENABLE_STACK_CHECKING
+#ENABLE_TRACE
+
+/*******************************************************************************************
+  输入输出定义
+*******************************************************************************************/
+DIGITAL_INPUT _SKIP_, _SKIP_, _SKIP_, Set_Addr, C_OPEN, C_STOP, C_CLOSE;
+ANALOG_INPUT Percent;
+BUFFER_INPUT _SKIP_, DOOYA_RX$[10];
+
+DIGITAL_OUTPUT _SKIP_, _SKIP_, _SKIP_, _SKIP_, C_OPEN_FB, C_STOP_FB, C_CLOSE_FB;
+ANALOG_OUTPUT Percent_Fb;
+STRING_OUTPUT Text$;
+STRING_OUTPUT DOOYA_TX$;
+
+/*******************************************************************************************
+  参数定义（可在SIMPL项目中配置）
+*******************************************************************************************/
+INTEGER_PARAMETER ID_L, ID_H;
+INTEGER_PARAMETER MOTOR;
+
+#BEGIN_PARAMETER_PROPERTIES ID_H
+	propValidUnits = unitHex;
+	propDefaultUnit = unitHex;
+	propDefaultValue = 0x01;
+#END_PARAMETER_PROPERTIES
+
+#BEGIN_PARAMETER_PROPERTIES ID_L
+	propValidUnits = unitHex;
+	propDefaultUnit = unitHex;
+	propDefaultValue = 0x01;
+#END_PARAMETER_PROPERTIES
+
+#BEGIN_PARAMETER_PROPERTIES MOTOR
+	propValidUnits = unitDecimal;
+	propDefaultUnit = unitDecimal;
+	propDefaultValue = 1d;
+#END_PARAMETER_PROPERTIES
+
+/*******************************************************************************************
+  全局变量
+*******************************************************************************************/
+INTEGER CHECK;               // CRC16校验结果
+INTEGER Data[10];            // 命令数据缓冲区
+INTEGER Motor_Per;           // 电机百分比位置
+INTEGER Motor_temp;          // 电机临时变量
+STRING CHECK_SUM_HI[1];      // 校验和高位字节
+STRING CHECK_SUM_LOW[1];     // 校验和低位字节
+
+/*******************************************************************************************
+  CRC16校验函数
+  参数: data_len - 数据长度（要计算校验的数据个数）
+  返回: 16位CRC值
+  说明: 使用标准CRC-16/CCITT算法（多项式0x1021）
+        SIMPL+不支持位运算符，使用算术运算模拟：
+        - CRC & 0x8000 → CRC / 65536 = 0（判断最高位）
+        - CRC << 1 → CRC * 2（左移一位）
+        - 0x1021 = 40961（多项式常量）
+        - 0xFFFF = 65535（初始值）
+*******************************************************************************************/
+Integer_FUNCTION CRC16(integer data_len)
+{
+    INTEGER CRC, I, J;
+    CRC = 65535;  // 初始值0xFFFF
+
+    FOR(I = 1 TO data_len)
+    {
+        CRC = CRC ^ Data[I];  // 与当前数据字节异或
+
+        FOR(J = 1 TO 8)       // 循环8次，处理每一位
+        {
+            IF(CRC / 65536 = 0)  // 判断最高位是否为0（CRC < 0x8000）
+            {
+                IF((CRC * 2) > 65535)  // 如果左移后溢出
+                {
+                    CRC = (CRC * 2) - 65536;  // 去掉溢出的最高位
+                    CRC = CRC ^ 40961;         // 与多项式0x1021异或
+                }
+                ELSE
+                {
+                    CRC = CRC * 2;  // 直接左移
+                }
+            }
+            ELSE  // 最高位为1
+            {
+                CRC = (CRC * 2) - 65536;  // 左移并去掉溢出位
+                CRC = CRC ^ 40961;         // 与多项式异或
+            }
+        }
+    }
+    return (CRC);
+}
+
+/*******************************************************************************************
+  计算CRC并拆分高低字节
+  参数: data_len - 数据长度
+  说明: 调用CRC16函数计算校验值，然后拆分为高低两个字节
+        CHECK_SUM_HI = CRC高8位, CHECK_SUM_LOW = CRC低8位
+        SIMPL+中用CHR()将INTEGER转换为STRING用于发送
+*******************************************************************************************/
+Function CalcCRC(integer data_len)
+{
+    CHECK = CRC16(data_len);
+    CHECK_SUM_HI = CHR(CHECK / 256);                           // 高8位 = CRC / 256
+    CHECK_SUM_LOW = CHR(CHECK - (CHECK / 256) * 256);         // 低8位 = CRC % 256
+}
+
+/*******************************************************************************************
+  事件：设置设备地址
+  说明: 按下Set_Addr后，发送地址设置命令
+        命令格式: 55 00 00 02 00 02 ID_L ID_H CRC_L CRC_H
+        地址设置为参数ID_L和ID_H的值
+*******************************************************************************************/
+PUSH Set_Addr
+{
+    Data[1] = 0x55;   // 帧头
+    Data[2] = 0x00;   // 保留
+    Data[3] = 0x00;   // 保留
+    Data[4] = 0x02;   // 长度
+    Data[5] = 0x00;   // 保留
+    Data[6] = 0x02;   // 设置地址命令码
+    Data[7] = ID_L;   // 目标地址低字节
+    Data[8] = ID_H;   // 目标地址高字节
+
+    CalcCRC(8);       // 计算前8字节的CRC
+
+    // 组装并发送完整命令
+    DOOYA_TX$ = CHR(Data[1]) + CHR(Data[2]) + CHR(Data[3]) + CHR(Data[4]) + CHR(Data[5]) + CHR(Data[6]) + CHR(Data[7]) + CHR(Data[8]) + CHECK_SUM_LOW + CHECK_SUM_HI;
+}
+
+/*******************************************************************************************
+  事件：窗帘控制（开/停/关）
+  说明: 根据按下的按钮发送对应的控制命令
+        命令格式: 55 ID_L ID_H 03 Cmd CRC_L CRC_H
+        双电机模式(MOTOR=2)下，开/关命令码互换：
+          - MOTOR=1: 0x01=开, 0x02=关
+          - MOTOR=2: 0x02=开, 0x01=关
+        这是因为不同电机的正反转定义可能不同
+*******************************************************************************************/
+PUSH C_OPEN, C_STOP, C_CLOSE
+{
+    Data[2] = ID_L;   // 设备地址低字节
+    Data[3] = ID_H;   // 设备地址高字节
+
+    if (C_OPEN)       // 按下开启按钮
+    {
+        IF(MOTOR - 1)       // 如果是双电机(MOTOR=2)
+            Data[5] = 0x02; // 双电机开命令
+        ELSE
+            Data[5] = 0x01; // 单电机开命令
+        C_OPEN_FB = 1; C_STOP_FB = 0; C_CLOSE_FB = 0;
+    }
+    else if (C_CLOSE)  // 按下关闭按钮
+    {
+        IF(MOTOR - 1)       // 如果是双电机(MOTOR=2)
+            Data[5] = 0x01; // 双机关闭命令
+        ELSE
+            Data[5] = 0x02; // 单机关闭命令
+        C_OPEN_FB = 0; C_STOP_FB = 0; C_CLOSE_FB = 1;
+    }
+    else if (C_STOP)   // 按下停止按钮
+    {
+        Data[5] = 0x03;     // 停止命令码
+        C_OPEN_FB = 0; C_STOP_FB = 1; C_CLOSE_FB = 0;
+    }
+
+    Data[1] = 0x55;    // 帧头
+    Data[4] = 0x03;    // 数据长度
+
+    CalcCRC(5);        // 计算前5字节的CRC
+
+    // 组装并发送完整命令
+    DOOYA_TX$ = CHR(Data[1]) + CHR(Data[2]) + CHR(Data[3]) + CHR(Data[4]) + CHR(Data[5]) + CHECK_SUM_LOW + CHECK_SUM_HI;
+}
+
+/*******************************************************************************************
+  事件：百分比定位控制
+  说明: 当Percent模拟量变化时，发送百分比控制命令
+        命令格式: 55 ID_L ID_H 03 04 Percent CRC_L CRC_H
+        Percent范围: 0-100（0=关闭, 100=完全打开）
+        延时60ms发送是为了避免频繁发送命令
+        Percent_Fb = Percent * 655（转换为0-65500范围的反馈值）
+*******************************************************************************************/
+CHANGE Percent
+{
+    Motor_Per = Percent;
+    if (Motor_Per >= 100) Motor_Per = 100;  // 限制最大值为100
+
+    CancelAllWait();
+    Wait(60)
+    {
+        Data[1] = 0x55;   // 帧头
+        Data[2] = ID_L;   // 设备地址低字节
+        Data[3] = ID_H;   // 设备地址高字节
+        Data[4] = 0x03;   // 数据长度
+        Data[5] = 0x04;   // 百分比控制命令码
+        Data[6] = Motor_Per; // 目标百分比(0-100)
+
+        CalcCRC(6);       // 计算前6字节的CRC
+
+        // 组装并发送完整命令
+        DOOYA_TX$ = CHR(Data[1]) + CHR(Data[2]) + CHR(Data[3]) + CHR(Data[4]) + CHR(Data[5]) + CHR(Data[6]) + CHECK_SUM_LOW + CHECK_SUM_HI;
+    }
+    Percent_Fb = Motor_Per * 655;  // 更新反馈值
+}
+
+/*******************************************************************************************
+  事件：接收数据处理
+  说明: 当DOOYA_RX$缓冲区接收到数据时，清空缓冲区
+        可在此扩展为解析设备返回的状态信息
+*******************************************************************************************/
+CHANGE DOOYA_RX$
+{
+    ClearBuffer(DOOYA_RX$);
+}
+
+/*******************************************************************************************
+  Main函数：系统启动时执行一次
+  说明: 初始化电机临时变量为1
+*******************************************************************************************/
+Function Main()
+{
+    Motor_temp = 1;
+}

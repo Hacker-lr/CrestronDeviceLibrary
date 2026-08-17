@@ -1,0 +1,252 @@
+/*******************************************************************************************
+  模块名称: VedioMatrix_LOHTEA_32
+  功能说明: LOHTEA视频矩阵切换控制模块（32x32，支持预设/升降屏/视频模式）
+  优化内容:
+    1. 清理未使用的注释模板、空函数骨架和无效代码块
+    2. 修正断开路由时输出反馈未本地刷新的问题（避免触发串口查询延迟）
+    3. 精简代码结构，添加清晰的中文注释
+  通讯协议: RS232, 9600, 8, 1, N
+*******************************************************************************************/
+
+#SYMBOL_NAME "VedioMatrix_LOHTEA_32"
+#DEFINE_CONSTANT InputCount 32
+#DEFINE_CONSTANT OutputCount 32
+#DEFAULT_VOLATILE
+#ENABLE_STACK_CHECKING
+#ENABLE_TRACE
+
+/*******************************************************************************************
+  输入输出定义（与原始接口保持一致，确保.ush文件兼容）
+*******************************************************************************************/
+DIGITAL_INPUT save_preset;
+DIGITAL_INPUT All_shenjiangpin;
+DIGITAL_INPUT page_reflash_fb;
+DIGITAL_INPUT MatrxInputBtn[32],_skip_;
+DIGITAL_INPUT _Skip_,MatrxOutputBtn[32],_skip_;
+DIGITAL_INPUT preset[6],_skip_;
+DIGITAL_INPUT auto_switch[1];
+
+DIGITAL_OUTPUT save_preset_fb;
+DIGITAL_OUTPUT shenjiangpin_fb;
+DIGITAL_OUTPUT _skip_,MatrxInputFb[32],_skip_;
+DIGITAL_OUTPUT _skip_,MatrxOutputFb[32],_skip_;
+DIGITAL_OUTPUT preset_fb[6],_skip_;
+
+ANALOG_INPUT video_mode;
+BUFFER_INPUT LOHTE_rx$[800];
+
+STRING_OUTPUT _skip_,LOHTEA_tx$,_skip_;
+STRING_OUTPUT _skip_,huiyis_tv1_tx$,_skip_;
+STRING_OUTPUT _skip_,huiyis_tv2_tx$,_skip_;
+STRING_OUTPUT _skip_,huiyis_tv3_tx$,_skip_;
+
+STRING_PARAMETER _skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,
+_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,
+_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_,_skip_;
+
+/*******************************************************************************************
+  全局变量
+*******************************************************************************************/
+INTEGER MatrxStaus[OutputCount];
+INTEGER MatrxIn;
+INTEGER auto;
+
+/*******************************************************************************************
+  辅助函数：刷新输入输出按钮反馈状态
+  说明: 向矩阵发送状态查询指令，解析回传数据后更新MatrxStaus及输出反馈
+        查询指令: 23 41 00 00 03 FF
+        回应头:   23 41 00 18 1E ...
+*******************************************************************************************/
+Function RefreshBtnFeedBack()
+{
+    LOHTE_rx$ = "";
+    LOHTEA_tx$ = chr(0x23) + chr(0x41) + chr(0x00) + chr(0x00) + chr(0x03) + chr(0xff);
+
+    WAIT(20)
+    {
+        INTEGER i;
+        INTEGER startpos;
+        INTEGER findnextnum_shiwei;
+        INTEGER findnextnum_gewei;
+        STRING checkstart$[10];
+
+        checkstart$ = chr(0x23) + chr(0x41) + chr(0x00) + chr(0x18) + chr(0x1E);
+        startpos = find(checkstart$, LOHTE_rx$);
+
+        IF(startpos)
+        {
+            FOR(i = 1 TO 32)
+            {
+                findnextnum_shiwei = 5 + 3 * (i - 1) + startpos;
+                findnextnum_gewei = findnextnum_shiwei + 1;
+                MatrxStaus[i] = atoi(MID(LOHTE_rx$, findnextnum_shiwei, 1)) * 10 + atoi(MID(LOHTE_rx$, findnextnum_gewei, 1));
+                LOHTEA_tx$ = itoa(i) + "=" + itoa(MatrxStaus[i]);
+
+                IF(MatrxStaus[i] = MatrxIn)
+                    MatrxOutputFb[i] = 1;
+                ELSE
+                    MatrxOutputFb[i] = 0;
+            }
+        }
+    }
+}
+
+/*******************************************************************************************
+  辅助函数：发送矩阵单路切换命令
+  说明: 命令格式为 23 41 00 03 04 输出 输入 46 FF
+*******************************************************************************************/
+Function SetMatrxBase(INTEGER in, INTEGER out)
+{
+    LOHTEA_tx$ = chr(0x23) + chr(0x41) + chr(0x00) + chr(0x03) + chr(0x04) + chr(out - 1) + chr(in - 1) + chr(0x46) + chr(0xff);
+}
+
+/*******************************************************************************************
+  事件：输入通道选择
+  说明: 按下输入按钮后，记录当前输入编号，点亮该输入反馈，并发起串口查询刷新输出反馈
+*******************************************************************************************/
+PUSH MatrxInputBtn
+{
+    MatrxIn = GetLastModifiedArrayIndex();
+    SetArray(MatrxInputFb, 0);
+    MatrxInputFb[MatrxIn] = 1;
+    RefreshBtnFeedBack();
+}
+
+/*******************************************************************************************
+  事件：输出通道选择
+  说明: 
+    - 若当前输出已连接到选中输入，则断开连接并本地清除反馈
+    - 否则建立路由，并发送切换命令
+    - 输出27/28时同步触发会议电视串口指令（PON）
+*******************************************************************************************/
+PUSH MatrxOutputBtn
+{
+    INTEGER n;
+
+    n = GetLastModifiedArrayIndex();
+
+    IF(MatrxStaus[n] = MatrxIn)
+    {
+        MatrxStaus[n] = 0;
+        MatrxOutputFb[n] = 0;
+    }
+    ELSE
+    {
+        MatrxStaus[n] = MatrxIn;
+        MatrxOutputFb[n] = 1;
+        SetMatrxBase(MatrxIn, n);
+    }
+
+    IF(n = 28)
+        huiyis_tv3_tx$ = chr(0x02) + chr(0x50) + chr(0x4f) + chr(0x4e) + chr(0x03);
+
+    IF(n = 27)
+        huiyis_tv1_tx$ = chr(0x02) + chr(0x50) + chr(0x4f) + chr(0x4e) + chr(0x03);
+}
+
+/*******************************************************************************************
+  事件：一键升降屏
+  说明: 将当前选中输入同时路由到输出1-11
+*******************************************************************************************/
+PUSH All_shenjiangpin
+{
+    INTEGER n;
+
+    FOR(n = 1 TO 11)
+    {
+        SetMatrxBase(MatrxIn, n);
+        MatrxOutputFb[n] = 1;
+    }
+}
+
+/*******************************************************************************************
+  事件：页面刷新
+  说明: 手动触发矩阵状态查询，刷新所有按钮反馈
+*******************************************************************************************/
+PUSH page_reflash_fb
+{
+    RefreshBtnFeedBack();
+}
+
+/*******************************************************************************************
+  事件：视频模式切换
+  说明: 根据video_mode模拟量值执行不同的批量路由策略
+*******************************************************************************************/
+CHANGE video_mode
+{
+    SWITCH(video_mode)
+    {
+        CASE(1):
+        {
+            SetMatrxBase(4, 2);
+            SetMatrxBase(3, 1);
+            SetMatrxBase(1, 3);
+        }
+        CASE(2):
+        {
+            SetMatrxBase(5, 2);
+            SetMatrxBase(3, 1);
+            SetMatrxBase(1, 3);
+        }
+        CASE(4):
+        {
+            SetMatrxBase(4, 3);
+        }
+        CASE(5):
+        {
+            SetMatrxBase(5, 3);
+        }
+    }
+}
+
+/*******************************************************************************************
+  事件：保存预设标志
+  说明: 置位save_preset_fb，表示下一次按预设按钮时将执行保存操作
+*******************************************************************************************/
+CHANGE save_preset
+{
+    save_preset_fb = 1;
+}
+
+/*******************************************************************************************
+  事件：预设按钮（保存/调用）
+  说明: 
+    - 若save_preset_fb为1，发送保存指令 23 41 00 01 06 N FF
+    - 否则发送调用指令 23 41 00 01 07 N FF
+*******************************************************************************************/
+CHANGE preset
+{
+    INTEGER n;
+    n = GetLastModifiedArrayIndex();
+
+    IF(save_preset_fb)
+    {
+        LOHTEA_tx$ = chr(0x23) + chr(0x41) + chr(0x00) + chr(0x01) + chr(0x06) + chr(n - 1) + chr(0xff);
+        save_preset_fb = 0;
+    }
+    ELSE
+    {
+        LOHTEA_tx$ = chr(0x23) + chr(0x41) + chr(0x00) + chr(0x01) + chr(0x07) + chr(n - 1) + chr(0xff);
+    }
+}
+
+/*******************************************************************************************
+  事件：自动轮巡切换
+  说明: 将auto变量对应的输入切换到输出7，auto在1-4之间循环
+*******************************************************************************************/
+PUSH auto_switch
+{
+    SetMatrxBase(auto, 7);
+
+    auto = auto + 1;
+    IF(auto = 5)
+        auto = 1;
+}
+
+/*******************************************************************************************
+  Main函数：系统启动时执行一次
+*******************************************************************************************/
+Function Main()
+{
+    auto = 1;
+}

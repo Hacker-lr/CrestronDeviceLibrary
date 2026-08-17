@@ -1,0 +1,31 @@
+# ---- 构建产物（C# / SIMPL#）----
+bin/
+obj/
+packages/
+*.clz
+*.cpz
+*.lpz
+*.dll
+*.pdb
+*.exe
+*.bak
+*.bak2
+
+# ---- SIMPL Windows 生成/编译文件 ----
+*.sm2
+*.sig
+*.sgd*
+*.dip
+*.lpz.hash
+*.spz
+logfile.txt
+SPlsWork/
+
+# ---- 打包/备份 ----
+*.zip
+
+# ---- IDE / 编辑器 ----
+.vscode/
+.vs/
+*.user
+*.suo
