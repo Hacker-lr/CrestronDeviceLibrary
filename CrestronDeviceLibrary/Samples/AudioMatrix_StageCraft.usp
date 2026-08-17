@@ -14,18 +14,24 @@
 
 #SYMBOL_NAME "AudioMatrix_StageCraft"
 #DEFINE_CONSTANT CH 16
+
+// =====================================================================
+//  [设备连接配置] 改这里，改完重新编译（F12）
+// =====================================================================
+#DEFINE_CONSTANT DEVICE_IP    "192.168.0.222"
+#DEFINE_CONSTANT DEVICE_PORT  1698
+
 #DEFAULT_VOLATILE
 #ENABLE_TRACE
 
 #USER_SIMPLSHARP_LIBRARY "CrestronDeviceLibrary"
 
 // ===== 变量区（SIMPL+ 规则：所有变量/串口缓冲必须在所有数组声明之前） =====
+STRING device_ip$[32];   // 设备 IP 字符串（Main() 里由头部 DEVICE_IP 常量赋值）
 // 输入变量
-BUFFER_INPUT audio_rx$[500], audio_rx2$[50];
 DIGITAL_INPUT mode1, mode2, mode3, mode4, mode5, allmute, _skip_;
 DIGITAL_INPUT mixpage_fb, mixin_button_fb, mixout_button_fb;
 // 输出变量
-STRING_OUTPUT audio_tx$, audio_tx2$;
 DIGITAL_OUTPUT mode1fb, mode2fb, mode3fb, mode4fb, mode5fb, allmuteFb, _skip_;
 DIGITAL_OUTPUT _skip_, _skip_, _skip_;
 
@@ -41,11 +47,12 @@ DIGITAL_INPUT Matrx_IN_audio_jia[CH];
 DIGITAL_INPUT Matrx_IN_audio_jian[CH];
 DIGITAL_INPUT Matrx_OUT_audio_jia[CH];
 DIGITAL_INPUT Matrx_OUT_audio_jian[CH];
+DIGITAL_INPUT _reserved2[1];                        // dummy 真数组占位：让 jian 不是最后一个数组 → 强制展开 16 行（否则折叠成 [#] 缩 15 行，左右两列错位；同行 _skip_ 无效，必须真数组）
 DIGITAL_OUTPUT MatrxINFb[CH], _skip_;
 DIGITAL_OUTPUT INmuteFb[CH], _skip_;
 DIGITAL_OUTPUT MatrxOUTFb[CH], _skip_;
 DIGITAL_OUTPUT OUTmuteFb[CH], _skip_;
-// ---- 对齐占位：数字输出补到与数字输入等长（142），使 List2 起点两侧一致，Level 组在 Detail View 全局视图同行 ----
+// ---- 对齐占位：数字输出补到与数字输入等长（143），使 List2 起点两侧一致，Level 组在 Detail View 全局视图同行 ----
 DIGITAL_OUTPUT _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_;
 DIGITAL_OUTPUT _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_;
 DIGITAL_OUTPUT _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_;
@@ -54,6 +61,7 @@ DIGITAL_OUTPUT _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_;
 DIGITAL_OUTPUT _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_;
 DIGITAL_OUTPUT _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_;
 DIGITAL_OUTPUT _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_;
+DIGITAL_OUTPUT _skip_;                                // 与输入 _reserved2[1] 配对（65 个）
 ANALOG_OUTPUT Level_analogINFb[16], _skip_;      // 在 OUTmuteFb 下面
 ANALOG_OUTPUT level_analogOUTFb[16], _skip_;     // 在 Level_analogINFb 下面
 ANALOG_OUTPUT Meter_analogINFb[16];
@@ -64,24 +72,18 @@ STRING_OUTPUT level_tx$[32];
 // ---------------- 库对象（声明即实例化，不要写 new） ----------------
 StageCraftMatrix matrix;
 
-// ---------------- 主函数：绑定输出委托 + 登录 ----------------
+// ---------------- 主函数：绑定输出委托 + 配置 + 登录 ----------------
 Function Main()
 {
-    RegisterDelegate(matrix, SendCommand, fnSend);    // C# 发命令 -> audio_tx$
     RegisterDelegate(matrix, DigitalFb,  fnDigital);  // 数字反馈 -> _fb 引脚
     RegisterDelegate(matrix, AnalogFb,   fnAnalog);   // 模拟反馈 -> 电平/音量表
     RegisterDelegate(matrix, SerialFb,   fnSerial);   // 串口反馈 -> 显示文本
 
-    matrix.Login();
+    device_ip$ = DEVICE_IP;                     // 完整 IP 字符串（值在文件头部配置区改）
+    matrix.Configure(device_ip$, DEVICE_PORT);  // IP + 端口（值在文件头部配置区改）
+    matrix.Start();                            // 直连设备并自动登录
     matrix.StartLevelPolling(250);   // 启动 C# 侧实时轮询（电平/音量表/静音）
     WaitForInitializationComplete();
-}
-
-// ---------------- 串口接收（应答解析在 C# 里做） ----------------
-CHANGE audio_rx$
-{
-    matrix.OnDataReceived(audio_rx$);
-    ClearBuffer(audio_rx$);   // 关键：清空 BUFFER，防止下次 CHANGE 重复累积全部旧数据
 }
 
 // ---------------- 静音（已验证） ----------------
@@ -124,14 +126,6 @@ CHANGE mixpage_fb
 
 CHANGE mixout_button_fb { IF(mixout_button_fb) matrix.ReadOutputMeter(); }
 CHANGE mixin_button_fb  { IF(mixin_button_fb)  matrix.ReadInputMeter(); }
-
-// =====================================================================
-//  回调：C# 发命令 -> audio_tx$
-// =====================================================================
-CALLBACK FUNCTION fnSend(STRING cmd$)
-{
-    audio_tx$ = cmd$;
-}
 
 // =====================================================================
 //  回调：数字反馈路由（id 见 StageCraftMatrix Fb* 常量）

@@ -388,7 +388,7 @@ namespace CrestronDeviceLibrary.Devices
         /// <summary>
         /// 启动周期轮询。intervalMs 为轮询周期（建议 200~500）。
         /// 每个周期：刷新输入/输出音量表（二进制）+ 全部 16 路输入/输出电平（ASCII ReadL1/ReadL2）
-        /// + 每 20 个周期刷新一次静音状态。调用前须已 RegisterDelegate。
+        /// + 每 2 个周期（约 500ms）刷新静音状态和当前选中输出的路由。调用前须已 RegisterDelegate。
         /// </summary>
         public void StartLevelPolling(ushort intervalMs)
         {
@@ -427,11 +427,15 @@ namespace CrestronDeviceLibrary.Devices
             }
             SendAscii(sb.ToString());
 
-            // 3) 静音：每 20 周期刷新一次（250ms 周期下约 5s）
-            if (_tick % 20 == 0)
+            // 3) 静音 + 路由：每 2 周期刷新（250ms 周期下约 500ms）
+            //    原来静音每 20 周期（约 5s，设备侧改静音要 5s 才反馈到 VTP）、
+            //    路由只在点输出时查一次（设备侧改路由 VTP 不刷新）——
+            //    都改成高频轮询，设备侧改动 500ms 内反馈到 VTP（与 Tesira 同款优化）。
+            if (_tick % 2 == 0)
             {
                 ReadInputMutes();
                 ReadOutputMutes();
+                if (SelectedOut >= 1) ReadMixRoute(SelectedOut);
             }
         }
 
@@ -594,22 +598,11 @@ namespace CrestronDeviceLibrary.Devices
         private void UpdateLevelFb(ushort ch, int db, ushort analogBase, ushort textBase)
         {
             if (ch < 1 || ch > Channels) return;
-            // 输入 mute 时强制电平/文本归零（设备硬件 meter 不变，视觉上"静音后灯灭"）
-            // 输出 mute 时强制电平/文本归零（输出端真的切断，meter 应该归零）
-            bool muted = (analogBase == FbInLevel && _inMute[ch])
-                      || (analogBase == FbOutLevel && _outMute[ch]);
-            if (muted)
-            {
-                if (VerboseLog) CrestronConsole.PrintLine("[StageCraft] LevelFb ch={0} MUTED -> 0", ch);
-                RaiseAnalog((ushort)(analogBase + ch - 1), 0);
-                RaiseSerial((ushort)(textBase + ch - 1), new SimplSharpString(ch + ":Mute"));
-            }
-            else
-            {
-                RaiseAnalog((ushort)(analogBase + ch - 1), DbToAnalog(db));
-                RaiseSerial((ushort)(textBase + ch - 1),
-                    new SimplSharpString(ch + ":" + (db < 0 ? "-" : "") + Math.Abs(db) + "dB"));
-            }
+            // 推子始终反映增益 dB 位置：静音【不】把推子拉到底，保留原位（与 Biamp 一致）。
+            // 静音状态由「数字反馈灯(INmuteFb/OUTmuteFb) + 音量表(VU)熄灭(UpdateMeter)」体现。
+            RaiseAnalog((ushort)(analogBase + ch - 1), DbToAnalog(db));
+            RaiseSerial((ushort)(textBase + ch - 1),
+                new SimplSharpString(ch + ":" + (db < 0 ? "-" : "") + Math.Abs(db) + "dB"));
         }
 
         // ---------------- 二进制应答解析 ----------------

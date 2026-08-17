@@ -85,6 +85,7 @@
     <Compile Include="Common\ResponseParser.cs" />
     <Compile Include="Devices\SonyViscaCamera.cs" />
     <Compile Include="Devices\StageCraftMatrix.cs" />
+    <Compile Include="Devices\BiampTesiraMatrix.cs" />
     <Compile Include="DeviceManager.cs" />
   </ItemGroup>
   <ItemGroup>
