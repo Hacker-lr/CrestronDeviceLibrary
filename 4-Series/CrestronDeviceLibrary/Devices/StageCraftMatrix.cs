@@ -24,7 +24,7 @@ namespace CrestronDeviceLibrary.Devices
     ///
     /// 已验证功能：音量加减、静音、混音路由、输入/输出电平与音量表实时反馈。
     /// </summary>
-    public class StageCraftMatrix
+    public class StageCraftMatrix : IMatrixControl
     {
         // ---------- 常量 ----------
         public const ushort Channels = 16;
@@ -55,17 +55,18 @@ namespace CrestronDeviceLibrary.Devices
         private static readonly Regex RxPostLevel = new Regex(@"PostLevel\s+(\d+):(-?\d+(?:\.\d+)?)dB");
 
         // ---------- 输出委托（SIMPL+ 用 RegisterDelegate 订阅） ----------
+        // 委托类型统一为 RedundantAudioMatrix.cs 的 Matrix*Fb，供 IMatrixControl 双机镜像。
         /// <summary>数字反馈：id 见 Fb* 常量。</summary>
-        public delegate void DigitalFbDelegate(ushort id, ushort value);
-        public DigitalFbDelegate DigitalFb { get; set; }
+        public MatrixDigitalFb DigitalFb { get; set; }
 
         /// <summary>模拟反馈：id 见 Fb* 常量。</summary>
-        public delegate void AnalogFbDelegate(ushort id, ushort value);
-        public AnalogFbDelegate AnalogFb { get; set; }
+        public MatrixAnalogFb AnalogFb { get; set; }
 
         /// <summary>串口反馈（显示文本）：id 见 Fb* 常量。</summary>
-        public delegate void SerialFbDelegate(ushort id, SimplSharpString text);
-        public SerialFbDelegate SerialFb { get; set; }
+        public MatrixSerialFb SerialFb { get; set; }
+
+        /// <summary>连接状态变化：true=已连，false=断开。</summary>
+        public event DeviceConnectionHandler ConnectionStateChanged;
 
         // ---------- 状态 ----------
         public ushort SelectedOut { get; private set; }  // 混音当前选中的输出通道
@@ -137,7 +138,7 @@ namespace CrestronDeviceLibrary.Devices
             {
                 CrestronConsole.PrintLine("[StageCraft] Stop EXCEPTION: {0}", ex.Message);
             }
-            _connected = false;
+            SetConnected(false);
         }
 
         private void ConnectAsync()
@@ -166,7 +167,7 @@ namespace CrestronDeviceLibrary.Devices
         {
             if (client.ClientStatus == SocketStatus.SOCKET_STATUS_CONNECTED)
             {
-                _connected = true;
+                SetConnected(true);
                 CrestronConsole.PrintLine("[StageCraft] v3.0 ONLINE - TCP connected {0}:{1}", _ip, _port);
                 client.ReceiveDataAsync(OnReceiveData);
                 // 二进制登录包：功能码01 子功能01 长度05 "admin"
@@ -185,14 +186,14 @@ namespace CrestronDeviceLibrary.Devices
             switch (status)
             {
                 case SocketStatus.SOCKET_STATUS_CONNECTED:
-                    _connected = true;
+                    SetConnected(true);
                     break;
                 case SocketStatus.SOCKET_STATUS_LINK_LOST:
                 case SocketStatus.SOCKET_STATUS_BROKEN_LOCALLY:
                 case SocketStatus.SOCKET_STATUS_BROKEN_REMOTELY:
                 case SocketStatus.SOCKET_STATUS_NO_CONNECT:
                 case SocketStatus.SOCKET_STATUS_CONNECT_FAILED:
-                    _connected = false;
+                    SetConnected(false);
                     ScheduleReconnect();
                     break;
                 // 中间状态（WAITING / DNS_LOOKUP / DNS_RESOLVED 等）忽略，不改变连接态
@@ -204,7 +205,7 @@ namespace CrestronDeviceLibrary.Devices
             if (numberOfBytes <= 0)
             {
                 CrestronConsole.PrintLine("[StageCraft] TCP closed by remote (len={0})", numberOfBytes);
-                _connected = false;
+                SetConnected(false);
                 ScheduleReconnect();
                 return;
             }
@@ -560,7 +561,11 @@ namespace CrestronDeviceLibrary.Devices
         private void ParseAsciiText(List<byte> bytes)
         {
             if (bytes.Count == 0) return;
+#if SERIES3
+            string text = Latin1ToString(bytes.ToArray());
+#else
             string text = Latin1.GetString(bytes.ToArray());
+#endif
 
             // L1Mute:01001010...（16位）
             foreach (Match m in RxL1Mute.Matches(text))
@@ -706,6 +711,15 @@ namespace CrestronDeviceLibrary.Devices
             return (int)Math.Round((analog - AnalogMid) / (double)DbPerStep);
         }
 
+        /// <summary>设置连接状态并（仅在变化时）触发 ConnectionStateChanged，供冗余控制器做 leader 选举。</summary>
+        private void SetConnected(bool online)
+        {
+            if (_connected == online) return;
+            _connected = online;
+            var h = ConnectionStateChanged;
+            if (h != null) h(online);
+        }
+
         private void RaiseDigital(ushort id, ushort value)
         {
             if (DigitalFb != null) DigitalFb(id, value);
@@ -724,5 +738,10 @@ namespace CrestronDeviceLibrary.Devices
         {
             if (SerialFb != null) SerialFb(id, text);
         }
+
+#if SERIES3
+        // ---- .NET CF 3.5 兼容辅助（3代无 Encoding.GetString(byte[]) 单参重载）----
+        private static string Latin1ToString(byte[] b) { return Latin1.GetString(b, 0, b.Length); }
+#endif
     }
 }

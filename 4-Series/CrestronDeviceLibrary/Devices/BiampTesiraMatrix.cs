@@ -31,7 +31,7 @@ namespace CrestronDeviceLibrary.Devices
     /// 实例标签（Instance Tag）与 Tesira 设计文件(.tmf)相关，做成可配置参数：
     ///   输入/输出电平块、矩阵混音块、输入/输出信号表块、预设(DEVICE recallPreset)。
     /// </summary>
-    public class BiampTesiraMatrix
+    public class BiampTesiraMatrix : IMatrixControl
     {
         // ---------- 常量 ----------
         public const ushort AnalogMid = 53928;       // 模拟量 0dB 中点（增益推子）
@@ -58,14 +58,13 @@ namespace CrestronDeviceLibrary.Devices
         private static readonly bool VerboseLog = false;
 
         // ---------- 输出委托（SIMPL+ 用 RegisterDelegate 订阅） ----------
-        public delegate void DigitalFbDelegate(ushort id, ushort value);
-        public DigitalFbDelegate DigitalFb { get; set; }
+        // 委托类型统一为 RedundantAudioMatrix.cs 的 Matrix*Fb，供 IMatrixControl 双机镜像。
+        public MatrixDigitalFb DigitalFb { get; set; }
+        public MatrixAnalogFb AnalogFb { get; set; }
+        public MatrixSerialFb SerialFb { get; set; }
 
-        public delegate void AnalogFbDelegate(ushort id, ushort value);
-        public AnalogFbDelegate AnalogFb { get; set; }
-
-        public delegate void SerialFbDelegate(ushort id, SimplSharpString text);
-        public SerialFbDelegate SerialFb { get; set; }
+        /// <summary>连接状态变化：true=已连，false=断开（冗余控制器据此做 leader 选举与重同步）。</summary>
+        public event DeviceConnectionHandler ConnectionStateChanged;
 
         // ---------- 状态 ----------
         public ushort SelectedOut { get; private set; }
@@ -216,7 +215,7 @@ namespace CrestronDeviceLibrary.Devices
             {
                 CrestronConsole.PrintLine("[Tesira] Stop EXCEPTION: {0}", ex.Message);
             }
-            _connected = false;
+            SetConnected(false);
             _state = ConnState.Disconnected;
         }
 
@@ -251,7 +250,7 @@ namespace CrestronDeviceLibrary.Devices
         {
             if (client.ClientStatus == SocketStatus.SOCKET_STATUS_CONNECTED)
             {
-                _connected = true;
+                SetConnected(true);
                 CrestronConsole.PrintLine("[Tesira] TCP connected {0}:{1}, waiting Telnet negotiation...", _ip, _port);
                 client.ReceiveDataAsync(OnReceiveData);
                 // 关键：本设备 Telnet 协商后【不主动发欢迎语】，直接接受命令，所以不能靠
@@ -273,14 +272,14 @@ namespace CrestronDeviceLibrary.Devices
             switch (status)
             {
                 case SocketStatus.SOCKET_STATUS_CONNECTED:
-                    _connected = true;
+                    SetConnected(true);
                     break;
                 case SocketStatus.SOCKET_STATUS_LINK_LOST:
                 case SocketStatus.SOCKET_STATUS_BROKEN_LOCALLY:
                 case SocketStatus.SOCKET_STATUS_BROKEN_REMOTELY:
                 case SocketStatus.SOCKET_STATUS_NO_CONNECT:
                 case SocketStatus.SOCKET_STATUS_CONNECT_FAILED:
-                    _connected = false;
+                    SetConnected(false);
                     _state = ConnState.Disconnected;
                     ScheduleReconnect();
                     break;
@@ -292,7 +291,7 @@ namespace CrestronDeviceLibrary.Devices
             if (numberOfBytes <= 0)
             {
                 CrestronConsole.PrintLine("[Tesira] TCP closed by remote (len={0})", numberOfBytes);
-                _connected = false;
+                SetConnected(false);
                 _state = ConnState.Disconnected;
                 ScheduleReconnect();
                 return;
@@ -414,7 +413,11 @@ namespace CrestronDeviceLibrary.Devices
                     consume++;
                 _textRx.RemoveRange(0, consume);
                 if (lineBytes.Count > 0)
+#if SERIES3
+                    HandleLine(BytesToString(lineBytes.ToArray()));
+#else
                     HandleLine(Encoding.ASCII.GetString(lineBytes.ToArray()));
+#endif
             }
             // 防累积：正常不应超过 4KB，脏数据卡死时清空自恢复
             if (_textRx.Count > 16384)
@@ -691,7 +694,11 @@ namespace CrestronDeviceLibrary.Devices
             if (xm.Success)
             {
                 int inCh, outCh;
+#if SERIES3
+                if (!TryParseInt(xm.Groups[1].Value, out inCh) || !TryParseInt(xm.Groups[2].Value, out outCh))
+#else
                 if (!int.TryParse(xm.Groups[1].Value, out inCh) || !int.TryParse(xm.Groups[2].Value, out outCh))
+#endif
                     return;
                 if (outCh < 1 || outCh > _channels || inCh < 1 || inCh > _channels) return;
                 bool on = value.Equals("true", StringComparison.OrdinalIgnoreCase);
@@ -703,9 +710,13 @@ namespace CrestronDeviceLibrary.Devices
 
             // 整块订阅：value 是数组（或单值兜底）
             Match arr = RxArray.Match(value);
+#if SERIES3
+            string[] parts = arr.Success ? SplitTokens(arr.Groups[1].Value) : new string[] { value };
+#else
             string[] parts = arr.Success
                 ? arr.Groups[1].Value.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries)
                 : new[] { value };
+#endif
 
             if (label == LblInLevel) ParseLevelArray(parts, AfbInLevel, SfbInLevelText, true);
             else if (label == LblOutLevel) ParseLevelArray(parts, AfbOutLevel, SfbOutLevelText, false);
@@ -721,8 +732,12 @@ namespace CrestronDeviceLibrary.Devices
             for (int i = 0; i < parts.Length && i < _channels; i++)
             {
                 double d;
+#if SERIES3
+                if (!TryParseDouble(parts[i], out d)) continue;
+#else
                 if (!double.TryParse(parts[i], System.Globalization.NumberStyles.Float,
                     System.Globalization.CultureInfo.InvariantCulture, out d)) continue;
+#endif
                 int db = (int)Math.Round(d);
                 ushort ch = (ushort)(i + 1);
                 UpdateLevelFb(ch, db, analogBase, textBase, isInput);
@@ -734,8 +749,12 @@ namespace CrestronDeviceLibrary.Devices
             for (int i = 0; i < parts.Length && i < _channels; i++)
             {
                 double d;
+#if SERIES3
+                if (!TryParseDouble(parts[i], out d)) continue;
+#else
                 if (!double.TryParse(parts[i], System.Globalization.NumberStyles.Float,
                     System.Globalization.CultureInfo.InvariantCulture, out d)) continue;
+#endif
                 ushort ch = (ushort)(i + 1);
                 if ((isInput && _inMute[ch]) || (!isInput && _outMute[ch]))
                 {
@@ -800,6 +819,15 @@ namespace CrestronDeviceLibrary.Devices
             return (ushort)v;
         }
 
+        /// <summary>设置连接状态并（仅在变化时）触发 ConnectionStateChanged，供冗余控制器做 leader 选举。</summary>
+        private void SetConnected(bool online)
+        {
+            if (_connected == online) return;
+            _connected = online;
+            var h = ConnectionStateChanged;
+            if (h != null) h(online);
+        }
+
         private void RaiseDigital(ushort id, ushort value)
         {
             if (DigitalFb != null) DigitalFb(id, value);
@@ -820,5 +848,24 @@ namespace CrestronDeviceLibrary.Devices
         {
             if (SerialFb != null) SerialFb(id, text);
         }
+
+#if SERIES3
+        // ---- .NET CF 3.5 兼容辅助（3代无 Encoding.GetString(byte[]) 单参 / int.TryParse / double.TryParse / StringSplitOptions）----
+        private static string BytesToString(byte[] b) { return Encoding.ASCII.GetString(b, 0, b.Length); }
+        private static bool TryParseInt(string s, out int r) { try { r = int.Parse(s); return true; } catch { r = 0; return false; } }
+        private static bool TryParseDouble(string s, out double r)
+        {
+            try { r = double.Parse(s, System.Globalization.CultureInfo.InvariantCulture); return true; }
+            catch { r = 0; return false; }
+        }
+        private static string[] SplitTokens(string s)
+        {
+            string[] raw = s.Split(new char[] { ' ', '\t' });
+            int n = 0; for (int i = 0; i < raw.Length; i++) if (raw[i].Length > 0) n++;
+            string[] o = new string[n]; int j = 0;
+            for (int i = 0; i < raw.Length; i++) if (raw[i].Length > 0) o[j++] = raw[i];
+            return o;
+        }
+#endif
     }
 }

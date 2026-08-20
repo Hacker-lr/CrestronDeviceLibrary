@@ -84,7 +84,7 @@ ANALOG_OUTPUT level_analogOUTFb[CH], _skip_;
 ANALOG_OUTPUT Meter_analogINFb[CH];
 ANALOG_OUTPUT Meter_analogOUTFb[CH];
 STRING_OUTPUT mix_tx[CH];
-STRING_OUTPUT level_tx$[2*CH];
+STRING_OUTPUT level_tx$[32];  // 必须 = 2*CH；SIMPL+ 数组维度不接受 2*CH 表达式，故用字面量（改 CH 时此处同步改）
 
 // ---------------- 库对象（声明即实例化，不要写 new） ----------------
 BiampTesiraMatrix matrix;
