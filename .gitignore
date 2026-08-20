@@ -29,3 +29,6 @@ SPlsWork/
 .vs/
 *.user
 *.suo
+
+# ---- SIMPL Windows 主程序目录（本地保留，不入库）----
+SIMPL-cp4/
