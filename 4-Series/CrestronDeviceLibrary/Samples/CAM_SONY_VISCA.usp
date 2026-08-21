@@ -34,6 +34,7 @@ Function Main()
 {
     RegisterDelegate(visca, SendTx,       fnSendTx);    // C# 推命令包 -> CAM_tx$[cam]
     RegisterDelegate(visca, ReportStatus, fnStatus);    // C# 推状态 -> 对应 _fb 引脚
+    visca.PushDefaultStates();                          // 初始化推送：VTP 一打开就有显示（摄像机1/默认速度/保存模式off）
     WaitForInitializationComplete();
 }
 

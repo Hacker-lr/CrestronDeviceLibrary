@@ -47,10 +47,10 @@ namespace CrestronDeviceLibrary.Devices
 
         // 调试开关：true 打印详细应答/反馈日志（调试时打开，正式部署关闭避免刷屏）
         // 用 static readonly（而非 const）避免编译器把 if(VerboseLog) 判定为"不可达代码"产生 CS0162 警告
-        private static readonly bool VerboseLog = false;
+        private static readonly bool VerboseLog = true;   // 【诊断】3 系上打开，看 mute 流程
         private static readonly Encoding Latin1 = Encoding.GetEncoding(28591);   // 字节<->字符 保真（0x80-0xFF 不被截断）
-        private static readonly Regex RxL1Mute = new Regex(@"L1Mute:([01]{16})");
-        private static readonly Regex RxL2Mute = new Regex(@"L2Mute:([01]{16})");
+        private static readonly Regex RxL1Mute = new Regex(@"L1Mute:([01]+)");
+        private static readonly Regex RxL2Mute = new Regex(@"L2Mute:([01]+)");
         private static readonly Regex RxPreLevel = new Regex(@"PreLevel\s+(\d+):(-?\d+(?:\.\d+)?)dB");
         private static readonly Regex RxPostLevel = new Regex(@"PostLevel\s+(\d+):(-?\d+(?:\.\d+)?)dB");
 
@@ -90,6 +90,15 @@ namespace CrestronDeviceLibrary.Devices
         // 周期轮询（电平/音量表/静音实时刷新）
         private CTimer _pollTimer;
         private int _tick;   // 轮询周期计数（用于每 N 周期刷新一次静音状态）
+
+        // ---- dirty check：值没变不 Raise（3 系 VTP 卡顿根因修复；4 系行为不变）----
+        private readonly int[] _lastLevelAnalog = InitNeg(Channels + 1);
+        private readonly int[] _lastMeterAnalog = InitNeg(Channels + 1);
+        private static int[] InitNeg(int n) { var a = new int[n]; for (int i = 0; i < n; i++) a[i] = int.MaxValue; return a; }
+
+        // ---- 页面驱动轮询：0=停，1=输入页，2=输出页，3=混音页 ----
+        private int _pollMode = 0;
+        private ushort _pollIntervalMs = 400;   // 3 系友好（原 250ms 太密；4 系无感）
 
         // ---------- 连接配置与建立（SIMPL+ 在 Main 里调用） ----------
         /// <summary>
@@ -172,11 +181,46 @@ namespace CrestronDeviceLibrary.Devices
                 client.ReceiveDataAsync(OnReceiveData);
                 // 二进制登录包：功能码01 子功能01 长度05 "admin"
                 SendBinary(0x01, 0x01, 0x01, 0x05, 0x00, 0x61, 0x64, 0x6d, 0x69, 0x6e);
+                // 连接成功后先推送默认值（VTP 立即有显示），再分批读回实际值
+                PushDefaultStates();
+                // 延迟分批全量刷新（读回设备实际值覆盖默认值）
+                new CTimer(o => { ReadAllInputLevels(); ReadAllOutputLevels(); }, null, 500, 0);
+                new CTimer(o => { ReadInputMutes(); ReadOutputMutes(); }, null, 700, 0);
+                new CTimer(o => { ReadInputMeter(); ReadOutputMeter(); }, null, 900, 0);
             }
             else
             {
                 CrestronConsole.PrintLine("[StageCraft] TCP connect failed status={0}", client.ClientStatus);
                 ScheduleReconnect();
+            }
+        }
+
+        /// <summary>
+        /// 推送默认状态（VTP 立即有显示，避免空白）：
+        /// 电平 0dB、静音 off、音量表 0。后续轮询/读回再覆盖实际值。
+        /// </summary>
+        private void PushDefaultStates()
+        {
+            for (ushort ch = 1; ch <= Channels; ch++)
+            {
+                // 电平推子：0dB（中间位置）
+                RaiseAnalog((ushort)(FbInLevel + ch - 1), DbToAnalog(0));
+                RaiseAnalog((ushort)(FbOutLevel + ch - 1), DbToAnalog(0));
+                // 电平文本："1:0dB"
+                RaiseSerial((ushort)(FbInLevelText + ch - 1), new SimplSharpString(ch + ":0dB"));
+                RaiseSerial((ushort)(FbOutLevelText + ch - 1), new SimplSharpString(ch + ":0dB"));
+                // 静音：off
+                RaiseDigital((ushort)(FbInMute + ch - 1), 0);
+                RaiseDigital((ushort)(FbOutMute + ch - 1), 0);
+                // 音量表：0（熄灭）
+                RaiseAnalog((ushort)(FbInMeter + ch - 1), 0);
+                RaiseAnalog((ushort)(FbOutMeter + ch - 1), 0);
+            }
+            // 路由：全灭
+            for (ushort i = 1; i <= Channels; i++)
+            {
+                RaiseDigital((ushort)(FbMixIn + i - 1), 0);
+                RaiseDigital((ushort)(FbMixOut + i - 1), 0);
             }
         }
 
@@ -252,9 +296,17 @@ namespace CrestronDeviceLibrary.Devices
             if (ch < 1 || ch > Channels) return;
             _inMute[ch] = mute != 0;
             string cmd = (mute != 0 ? "L1_Mute " : "L1_UnMute ") + ch + "#";
-            CrestronConsole.PrintLine("[StageCraft] Mute IN ch={0} -> {1}", ch, cmd);
+            CrestronConsole.PrintLine("[StageCraft] Mute IN ch={0} -> {1}, _inMute[{0}]={2}", ch, cmd, _inMute[ch]);
             SendAscii(cmd);
             RaiseDigital((ushort)(FbInMute + ch - 1), (ushort)(mute != 0 ? 1 : 0));
+            // mute 时只熄灭音量表（实时信号指示），不影响电平推子取值。
+            // 推子代表用户设定的音量，静音不应让其回零（否则会"先归零再恢复"的闪烁）。
+            if (mute != 0)
+            {
+                _lastMeterAnalog[ch] = 0;
+                RaiseAnalog((ushort)(FbInMeter + ch - 1), 0);
+                CrestronConsole.PrintLine("[StageCraft] Mute IN ch={0}: pushed 0 to meter", ch);
+            }
         }
 
         public void ToggleInputMute(ushort ch)
@@ -269,6 +321,12 @@ namespace CrestronDeviceLibrary.Devices
             _outMute[ch] = mute != 0;
             SendAscii((mute != 0 ? "L2_Mute " : "L2_UnMute ") + ch + "#");
             RaiseDigital((ushort)(FbOutMute + ch - 1), (ushort)(mute != 0 ? 1 : 0));
+            // mute 时只熄灭音量表（实时信号指示），不影响电平推子取值（推子代表音量，静音不应回零）
+            if (mute != 0)
+            {
+                _lastMeterAnalog[ch] = 0;
+                RaiseAnalog((ushort)(FbOutMeter + ch - 1), 0);
+            }
         }
 
         public void ToggleOutputMute(ushort ch)
@@ -288,10 +346,10 @@ namespace CrestronDeviceLibrary.Devices
         // =====================================================================
         //  电平调节（已验证）
         // =====================================================================
-        public void InputLevelAdd(ushort ch)  { if (ch < 1 || ch > Channels) return; SendAscii("L1_add " + ch + "#"); }
-        public void InputLevelSub(ushort ch)  { if (ch < 1 || ch > Channels) return; SendAscii("L1_sub " + ch + "#"); }
-        public void OutputLevelAdd(ushort ch) { if (ch < 1 || ch > Channels) return; SendAscii("L2_add " + ch + "#"); }
-        public void OutputLevelSub(ushort ch) { if (ch < 1 || ch > Channels) return; SendAscii("L2_sub " + ch + "#"); }
+        public void InputLevelAdd(ushort ch)  { if (ch < 1 || ch > Channels) return; SendAscii("L1_add " + ch + "#ReadL1 " + ch + "#"); }
+        public void InputLevelSub(ushort ch)  { if (ch < 1 || ch > Channels) return; SendAscii("L1_sub " + ch + "#ReadL1 " + ch + "#"); }
+        public void OutputLevelAdd(ushort ch) { if (ch < 1 || ch > Channels) return; SendAscii("L2_add " + ch + "#ReadL2 " + ch + "#"); }
+        public void OutputLevelSub(ushort ch) { if (ch < 1 || ch > Channels) return; SendAscii("L2_sub " + ch + "#ReadL2 " + ch + "#"); }
 
         /// <summary>设置输入电平（dB，可负）。例 SetInputLevel(2, -10)。</summary>
         public void SetInputLevel(ushort ch, int db)
@@ -382,19 +440,42 @@ namespace CrestronDeviceLibrary.Devices
         }
 
         // =====================================================================
-        //  周期轮询：实时电平 / 音量表 / 静音刷新
-        //  CTimer 在 C# 定时器线程跑，不占 SIMPL+ 线程 —— 这是替代"SIMPL+
-        //  每 250ms 轮询导致卡死"的关键。SIMPL+ 薄壳只需转发命令与回馈。
+        //  周期轮询：实时电平 / 音量表 / 静音刷新（页面驱动，按需轮询）
+        //  CTimer 在 C# 定时器线程跑，不占 SIMPL+ 线程。
+        //  模式：0=停，1=输入页（输入电平+输入meter+输入静音），2=输出页，3=混音页（路由+当前输出电平/meter）
         // =====================================================================
         /// <summary>
+        /// 设置轮询模式（页面驱动）。mode: 0=停，1=输入页，2=输出页，3=混音页。
+        /// 由 .usp 的 CHANGE mixpage_fb/mixin_button_fb/mixout_button_fb 调用。
+        /// 进入页面时调 SetPollMode(对应模式)，离开页面调 SetPollMode(0)。
+        /// </summary>
+        public void SetPollMode(ushort mode)
+        {
+            if (mode > 3) mode = 0;
+            if (_pollMode == mode) return;
+            _pollMode = mode;
+            CrestronConsole.PrintLine("[StageCraft] SetPollMode -> {0} (0=停,1=输入,2=输出,3=混音)", mode);
+            if (mode == 0)
+            {
+                StopLevelPolling();
+            }
+            else
+            {
+                if (_pollTimer == null) StartLevelPolling(_pollIntervalMs);
+                // 注意：不在这里推 FbMixOut 高亮——VTP 按钮高亮是 VTP 自己维护的状态，
+                // C# 推高亮会覆盖 VTP 状态导致显示错乱。用户点输出按钮时才触发 SelectOutput 刷新路由。
+            }
+        }
+
+        /// <summary>
         /// 启动周期轮询。intervalMs 为轮询周期（建议 200~500）。
-        /// 每个周期：刷新输入/输出音量表（二进制）+ 全部 16 路输入/输出电平（ASCII ReadL1/ReadL2）
-        /// + 每 2 个周期（约 500ms）刷新静音状态和当前选中输出的路由。调用前须已 RegisterDelegate。
+        /// 每个周期按当前 _pollMode 刷新对应数据（见 PollTick）。
         /// </summary>
         public void StartLevelPolling(ushort intervalMs)
         {
             if (_pollTimer != null) return;
             if (intervalMs < 100) intervalMs = 100;
+            _pollIntervalMs = intervalMs;
             _tick = 0;
             _pollTimer = new CTimer(PollTick, null, intervalMs, intervalMs);
         }
@@ -411,32 +492,41 @@ namespace CrestronDeviceLibrary.Devices
         private void PollTick(object userobj)
         {
             _tick++;
+            if (_pollMode == 0) return;   // 已停（双保险）
 
-            // 1) 音量表：每周期都刷（最实时）
-            ReadInputMeter();
-            ReadOutputMeter();
+            if (VerboseLog && _tick % 40 == 1)
+                CrestronConsole.PrintLine("[StageCraft] PollTick mode={0} tick={1}", _pollMode, _tick);
 
-            // 2) 电平：每周期查全部 16 路输入 + 16 路输出
-            //    之前分片 4 周期（1 秒）才刷完 16 路，电平最坏延迟 1 秒；
-            //    现在 250ms 内全部刷完，最坏延迟 250ms。
-            //    命令量从 8 个/周期 增到 32 个/周期，仍远在音频矩阵承受范围内。
-            var sb = new StringBuilder();
-            for (ushort ch = 1; ch <= Channels; ch++)
+            switch (_pollMode)
             {
-                sb.Append("ReadL1 ").Append(ch).Append('#');
-                sb.Append("ReadL2 ").Append(ch).Append('#');
-            }
-            SendAscii(sb.ToString());
+                case 1:  // 输入页：输入电平 + 输入音量表 + 输入静音
+                    ReadInputMeter();
+                    {
+                        var sb = new StringBuilder();
+                        for (ushort ch = 1; ch <= Channels; ch++) sb.Append("ReadL1 ").Append(ch).Append('#');
+                        SendAscii(sb.ToString());
+                    }
+                    if (_tick % 2 == 0) ReadInputMutes();
+                    break;
 
-            // 3) 静音 + 路由：每 2 周期刷新（250ms 周期下约 500ms）
-            //    原来静音每 20 周期（约 5s，设备侧改静音要 5s 才反馈到 VTP）、
-            //    路由只在点输出时查一次（设备侧改路由 VTP 不刷新）——
-            //    都改成高频轮询，设备侧改动 500ms 内反馈到 VTP（与 Tesira 同款优化）。
-            if (_tick % 2 == 0)
-            {
-                ReadInputMutes();
-                ReadOutputMutes();
-                if (SelectedOut >= 1) ReadMixRoute(SelectedOut);
+                case 2:  // 输出页：输出电平 + 输出音量表 + 输出静音
+                    ReadOutputMeter();
+                    {
+                        var sb = new StringBuilder();
+                        for (ushort ch = 1; ch <= Channels; ch++) sb.Append("ReadL2 ").Append(ch).Append('#');
+                        SendAscii(sb.ToString());
+                    }
+                    if (_tick % 2 == 0) ReadOutputMutes();
+                    break;
+
+                case 3:  // 混音页：当前输出电平/meter + 路由 + 输出静音
+                    ReadOutputMeter();
+                    // SelectedOut=0 时默认读输出 1（VTP 默认高亮输出 1）
+                    if (SelectedOut < 1) SelectedOut = 1;
+                    SendAscii("ReadL2 " + SelectedOut + "#");
+                    ReadMixRoute(SelectedOut);
+                    if (_tick % 2 == 0) ReadOutputMutes();
+                    break;
             }
         }
 
@@ -595,6 +685,7 @@ namespace CrestronDeviceLibrary.Devices
             for (int i = 0; i < bits.Length && i < Channels; i++)
             {
                 bool on = bits[i] == '1';
+                if (states[i + 1] == on) continue;   // dirty check
                 states[i + 1] = on;
                 RaiseDigital((ushort)(fbBase + i), (ushort)(on ? 1 : 0));
             }
@@ -603,9 +694,12 @@ namespace CrestronDeviceLibrary.Devices
         private void UpdateLevelFb(ushort ch, int db, ushort analogBase, ushort textBase)
         {
             if (ch < 1 || ch > Channels) return;
+            ushort analog = DbToAnalog(db);
+            if (_lastLevelAnalog[ch] == analog) return;   // dirty check
+            _lastLevelAnalog[ch] = analog;
             // 推子始终反映增益 dB 位置：静音【不】把推子拉到底，保留原位（与 Biamp 一致）。
             // 静音状态由「数字反馈灯(INmuteFb/OUTmuteFb) + 音量表(VU)熄灭(UpdateMeter)」体现。
-            RaiseAnalog((ushort)(analogBase + ch - 1), DbToAnalog(db));
+            RaiseAnalog((ushort)(analogBase + ch - 1), analog);
             RaiseSerial((ushort)(textBase + ch - 1),
                 new SimplSharpString(ch + ":" + (db < 0 ? "-" : "") + Math.Abs(db) + "dB"));
         }
@@ -690,8 +784,22 @@ namespace CrestronDeviceLibrary.Devices
                 int analog = (val - 31) * 532;
                 ushort ch = (ushort)(i + 1);
                 // mute 时强制归零（输入 meter 反映 mute 状态，输出 meter 同理）
-                if ((isInput && _inMute[ch]) || (isOutput && _outMute[ch])) analog = 0;
-                RaiseAnalog((ushort)(fbBase + i), (ushort)analog);
+                bool muted = (isInput && _inMute[ch]) || (isOutput && _outMute[ch]);
+                if (muted)
+                {
+                    // mute 时无条件推 0（确保熄灭；不依赖 dirty check，因为初始化可能已推过 0）
+                    _lastMeterAnalog[ch] = 0;
+                    RaiseAnalog((ushort)(fbBase + i), 0);
+                    if (VerboseLog) CrestronConsole.PrintLine("[StageCraft] UpdateMeter ch={0} muted -> 0", ch);
+                }
+                else
+                {
+                    // meter 不做 dirty check：它是实时信号强度显示，信号停了（值稳定不变）也必须推——
+                    // 否则 VTP 电平条会卡在最后的值不动（dirty check 误杀"无信号"的固定值）
+                    analog = (val - 31) * 532;
+                    _lastMeterAnalog[ch] = analog;
+                    RaiseAnalog((ushort)(fbBase + i), (ushort)analog);
+                }
             }
         }
 

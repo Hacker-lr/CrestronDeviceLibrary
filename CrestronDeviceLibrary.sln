@@ -1,0 +1,24 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 18
+VisualStudioVersion = 18.9.12105.275 stable
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CrestronDeviceLibrary", "4-Series\CrestronDeviceLibrary\CrestronDeviceLibrary.csproj", "{5727EEFA-4C8A-4BA7-84CB-F1C1FF07E749}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{5727EEFA-4C8A-4BA7-84CB-F1C1FF07E749}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5727EEFA-4C8A-4BA7-84CB-F1C1FF07E749}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5727EEFA-4C8A-4BA7-84CB-F1C1FF07E749}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5727EEFA-4C8A-4BA7-84CB-F1C1FF07E749}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {15DDA27E-5975-4EA0-97F0-AC32E4DACB90}
+	EndGlobalSection
+EndGlobal

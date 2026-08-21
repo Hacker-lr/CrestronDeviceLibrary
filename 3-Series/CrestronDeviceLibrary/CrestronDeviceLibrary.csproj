@@ -1,0 +1,96 @@
+﻿<Project ToolsVersion="3.5" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Release</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <ProductVersion>9.0.30729</ProductVersion>
+    <SchemaVersion>2.0</SchemaVersion>
+    <ProjectGuid>{BB2CE6CE-7B45-4D68-B029-923E6BAD2B1A}</ProjectGuid>
+    <OutputType>Library</OutputType>
+    <AppDesignerFolder>Properties</AppDesignerFolder>
+    <!-- RootNamespace 也必须 = .usp 引用的库名：3 系插件生成 .clz 文件名跟随 RootNamespace（实测 DLL 跟 AssemblyName，clz 跟 RootNamespace） -->
+    <RootNamespace>CrestronDeviceLibrary</RootNamespace>
+    <!-- 输出名必须与 .usp 的 #USER_SIMPLSHARP_LIBRARY "CrestronDeviceLibrary" 一致（3/4 代同名 .clz 分别部署到各自处理器，不冲突） -->
+    <AssemblyName>CrestronDeviceLibrary</AssemblyName>
+    <ProjectTypeGuids>{0B4745B0-194B-4BB6-8E21-E9057CA92500};{4D628B5B-2FBC-4AA6-8C16-197242AEB884};{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}</ProjectTypeGuids>
+    <PlatformFamilyName>WindowsCE</PlatformFamilyName>
+    <PlatformID>E2BECB1F-8C8C-41ba-B736-9BE7D946A398</PlatformID>
+    <OSVersion>5.0</OSVersion>
+    <DeployDirSuffix>SmartDeviceProject1</DeployDirSuffix>
+    <TargetFrameworkVersion>v3.5</TargetFrameworkVersion>
+    <NativePlatformName>Windows CE</NativePlatformName>
+    <FormFactorID>
+    </FormFactorID>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <AllowedReferenceRelatedFileExtensions>.allowedReferenceRelatedFileExtensions</AllowedReferenceRelatedFileExtensions>
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <OutputPath>bin\Debug\</OutputPath>
+    <DefineConstants>DEBUG;TRACE;SERIES3</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+    <FileAlignment>512</FileAlignment>
+    <NoStdLib>true</NoStdLib>
+    <NoConfig>true</NoConfig>
+    <GenerateSerializationAssemblies>off</GenerateSerializationAssemblies>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <AllowedReferenceRelatedFileExtensions>.allowedReferenceRelatedFileExtensions</AllowedReferenceRelatedFileExtensions>
+    <DebugType>none</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath>
+    <DefineConstants>TRACE;SERIES3</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+    <FileAlignment>512</FileAlignment>
+    <NoStdLib>true</NoStdLib>
+    <NoConfig>true</NoConfig>
+    <GenerateSerializationAssemblies>off</GenerateSerializationAssemblies>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="mscorlib" />
+    <Reference Include="SimplSharpCustomAttributesInterface, Version=1.0.0.0, Culture=neutral, PublicKeyToken=1099c178b3b54c3b, processorArchitecture=MSIL">
+      <SpecificVersion>False</SpecificVersion>
+      <HintPath>C:\ProgramData\Crestron\SDK\SimplSharpCustomAttributesInterface.dll</HintPath>
+    </Reference>
+    <Reference Include="SimplSharpHelperInterface, Version=1.0.0.0, Culture=neutral, PublicKeyToken=1099c178b3b54c3b, processorArchitecture=MSIL">
+      <SpecificVersion>False</SpecificVersion>
+      <HintPath>C:\ProgramData\Crestron\SDK\SimplSharpHelperInterface.dll</HintPath>
+    </Reference>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Data" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="Properties\AssemblyInfo.cs" />
+    <None Include="Properties\ControlSystem.cfg" />
+    <!-- 共享源码：链接引用 4代工程同一批 .cs（一份源码两代编译） -->
+    <Compile Include="..\..\4-Series\CrestronDeviceLibrary\Devices\RedundantAudioMatrix.cs">
+      <Link>Devices\RedundantAudioMatrix.cs</Link>
+    </Compile>
+    <Compile Include="..\..\4-Series\CrestronDeviceLibrary\Devices\BiampTesiraMatrix.cs">
+      <Link>Devices\BiampTesiraMatrix.cs</Link>
+    </Compile>
+    <Compile Include="..\..\4-Series\CrestronDeviceLibrary\Devices\StageCraftMatrix.cs">
+      <Link>Devices\StageCraftMatrix.cs</Link>
+    </Compile>
+    <!-- VISCA：CAM_SONY_VISCA.usp 依赖 SonyViscaCamera + Common 两个工具类 + DeviceManager -->
+    <Compile Include="..\..\4-Series\CrestronDeviceLibrary\DeviceManager.cs">
+      <Link>DeviceManager.cs</Link>
+    </Compile>
+    <Compile Include="..\..\4-Series\CrestronDeviceLibrary\Devices\SonyViscaCamera.cs">
+      <Link>Devices\SonyViscaCamera.cs</Link>
+    </Compile>
+    <Compile Include="..\..\4-Series\CrestronDeviceLibrary\Common\PacketBuilder.cs">
+      <Link>Common\PacketBuilder.cs</Link>
+    </Compile>
+    <Compile Include="..\..\4-Series\CrestronDeviceLibrary\Common\ResponseParser.cs">
+      <Link>Common\ResponseParser.cs</Link>
+    </Compile>
+  </ItemGroup>
+  <Import Project="$(MSBuildBinPath)\Microsoft.CompactFramework.CSharp.targets" />
+  <PropertyGroup>
+    <PostBuildEvent>rem  S# preparation will execute after these operations</PostBuildEvent>
+  </PropertyGroup>
+</Project>

@@ -52,6 +52,17 @@ namespace CrestronDeviceLibrary.Devices
 
         // ---------- 对外控制方法（SIMPL+ 引脚直接调） ----------
 
+        /// <summary>
+        /// 推送默认状态（VTP 立即有显示，避免初始化空白）：
+        /// 当前摄像机 1、速度默认、预置位保存模式 off。SIMPL+ 在 Main 里 RegisterDelegate 后调用一次。
+        /// </summary>
+        public void PushDefaultStates()
+        {
+            RaiseStatus(FbAddress, Address);                 // 默认摄像机 1
+            RaiseStatus(FbSpeed, Speed);                     // 默认速度
+            RaiseStatus(FbPresetSave, 0);                    // 保存模式 off
+        }
+
         /// <summary>选择摄像机（1..7），更新地址并回报。</summary>
         public void Select(ushort cam)
         {

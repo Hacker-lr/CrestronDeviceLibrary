@@ -76,6 +76,13 @@ namespace CrestronDeviceLibrary.Devices
         private bool[] _outMute = new bool[17];
         private bool[,] _route = new bool[17, 17];   // [输出, 输入]
 
+        // ---- dirty check：值没变不 Raise（3 系 VTP 卡顿优化；4 系行为不变）----
+        // 用 int.MaxValue 作"无值"哨兵（合法模拟值 0~65535 不会碰撞）
+        private readonly int[] _lastLevelAnalog = InitNeg(17);
+        private readonly bool[] _lastMuted = new bool[17];       // level 的 mute 状态（mute 推 0+"Mute"文本，需与 analog 一起判断）
+        private readonly int[] _lastMeterAnalog = InitNeg(17);
+        private static int[] InitNeg(int n) { var a = new int[n]; for (int i = 0; i < n; i++) a[i] = int.MaxValue; return a; }
+
         // 反馈 id 基址（随 _channels 计算；_channels=16 时与旧版/StageCraft 完全一致）
         private ushort FbInMute { get { return 1; } }
         private ushort FbOutMute { get { return (ushort)(_channels + 1); } }
@@ -489,8 +496,33 @@ namespace CrestronDeviceLibrary.Devices
             SendCommand("SESSION set verbose true");
             _state = ConnState.Ready;
             CrestronConsole.PrintLine("[Tesira] v1.1 ONLINE - subscription mode");
+            // 就绪后先推送默认值（VTP 立即有显示，避免初始化空白），订阅推送随后覆盖实际值
+            PushDefaultStates();
             SubscribeAll();
             StartResubTimer();
+        }
+
+        /// <summary>
+        /// 推送默认状态（VTP 立即有显示，避免初始化空白）：
+        /// 电平 0dB、静音 off、音量表 0。订阅推送随后覆盖实际值。
+        /// </summary>
+        private void PushDefaultStates()
+        {
+            for (ushort ch = 1; ch <= _channels; ch++)
+            {
+                // 电平推子：0dB（中间位置）
+                RaiseAnalog((ushort)(AfbInLevel + ch - 1), DbToAnalog(0));
+                RaiseAnalog((ushort)(AfbOutLevel + ch - 1), DbToAnalog(0));
+                // 电平文本："1:0dB"
+                RaiseSerial((ushort)(SfbInLevelText + ch - 1), new SimplSharpString(ch + ":0dB"));
+                RaiseSerial((ushort)(SfbOutLevelText + ch - 1), new SimplSharpString(ch + ":0dB"));
+                // 静音：off
+                RaiseDigital((ushort)(FbInMute + ch - 1), 0);
+                RaiseDigital((ushort)(FbOutMute + ch - 1), 0);
+                // 音量表：0（熄灭）
+                RaiseAnalog((ushort)(AfbInMeter + ch - 1), 0);
+                RaiseAnalog((ushort)(AfbOutMeter + ch - 1), 0);
+            }
         }
 
         // =====================================================================
@@ -532,6 +564,12 @@ namespace CrestronDeviceLibrary.Devices
             _inMute[ch] = mute != 0;
             SendCommand(_inLevelTag + " set mute " + ch + " " + (mute != 0 ? "true" : "false"));
             RaiseDigital((ushort)(FbInMute + ch - 1), (ushort)(mute != 0 ? 1 : 0));
+            // mute 时立即熄灭音量表（不等订阅推送，避免时序问题）
+            if (mute != 0)
+            {
+                _lastMeterAnalog[ch] = 0;
+                RaiseAnalog((ushort)(AfbInMeter + ch - 1), 0);
+            }
         }
 
         public void ToggleInputMute(ushort ch)
@@ -546,6 +584,12 @@ namespace CrestronDeviceLibrary.Devices
             _outMute[ch] = mute != 0;
             SendCommand(_outLevelTag + " set mute " + ch + " " + (mute != 0 ? "true" : "false"));
             RaiseDigital((ushort)(FbOutMute + ch - 1), (ushort)(mute != 0 ? 1 : 0));
+            // mute 时立即熄灭音量表
+            if (mute != 0)
+            {
+                _lastMeterAnalog[ch] = 0;
+                RaiseAnalog((ushort)(AfbOutMeter + ch - 1), 0);
+            }
         }
 
         public void ToggleOutputMute(ushort ch)
@@ -655,6 +699,8 @@ namespace CrestronDeviceLibrary.Devices
             CrestronConsole.PrintLine("[Tesira] StartLevelPolling ignored (subscription mode active)");
         }
         public void StopLevelPolling() { }
+        /// <summary>订阅模式无需轮询，空实现（与 StageCraft 的页面驱动轮询接口保持一致）。</summary>
+        public void SetPollMode(ushort mode) { }
 
         // =====================================================================
         //  内部：发送 / 订阅推送解析 / 回馈
@@ -758,11 +804,17 @@ namespace CrestronDeviceLibrary.Devices
                 ushort ch = (ushort)(i + 1);
                 if ((isInput && _inMute[ch]) || (!isInput && _outMute[ch]))
                 {
+                    // mute 时归零（无条件推，确保熄灭）
+                    _lastMeterAnalog[ch] = 0;
                     RaiseAnalog((ushort)(fbBase + i), 0);
                 }
                 else
                 {
-                    RaiseAnalog((ushort)(fbBase + i), MeterDbToAnalog(d));
+                    // meter 不做 dirty check：实时信号强度显示，信号停了（值稳定不变）也必须推——
+                    // 否则 VTP 电平条会卡在最后的值不动（dirty check 误杀"无信号"的固定值）
+                    int analog = MeterDbToAnalog(d);
+                    _lastMeterAnalog[ch] = analog;
+                    RaiseAnalog((ushort)(fbBase + i), (ushort)analog);
                 }
             }
         }
@@ -772,6 +824,8 @@ namespace CrestronDeviceLibrary.Devices
             for (int i = 0; i < parts.Length && i < _channels; i++)
             {
                 bool on = parts[i].Equals("true", StringComparison.OrdinalIgnoreCase);
+                // dirty check：状态没变不 Raise
+                if (states[i + 1] == on) continue;
                 states[i + 1] = on;
                 RaiseDigital((ushort)(fbBase + i), (ushort)(on ? 1 : 0));
             }
@@ -780,18 +834,14 @@ namespace CrestronDeviceLibrary.Devices
         private void UpdateLevelFb(ushort ch, int db, ushort analogBase, ushort textBase, bool isInput)
         {
             if (ch < 1 || ch > _channels) return;
-            bool muted = (isInput && _inMute[ch]) || (!isInput && _outMute[ch]);
-            if (muted)
-            {
-                RaiseAnalog((ushort)(analogBase + ch - 1), 0);
-                RaiseSerial((ushort)(textBase + ch - 1), new SimplSharpString(ch + ":Mute"));
-            }
-            else
-            {
-                RaiseAnalog((ushort)(analogBase + ch - 1), DbToAnalog(db));
-                RaiseSerial((ushort)(textBase + ch - 1),
-                    new SimplSharpString(ch + ":" + (db < 0 ? "-" : "") + Math.Abs(db) + "dB"));
-            }
+            // 推子始终反映增益 dB 位置：静音不把推子拉到底（与 StageCraft 一致）。
+            // 静音由「数字反馈灯 + 音量表熄灭(SetInputMute/ParseMeterArray)」体现。
+            ushort analog = DbToAnalog(db);
+            if (_lastLevelAnalog[ch] == analog) return;   // dirty check
+            _lastLevelAnalog[ch] = analog;
+            RaiseAnalog((ushort)(analogBase + ch - 1), analog);
+            RaiseSerial((ushort)(textBase + ch - 1),
+                new SimplSharpString(ch + ":" + (db < 0 ? "-" : "") + Math.Abs(db) + "dB"));
         }
 
         // ---------------- 换算与回报 ----------------

@@ -1,0 +1,290 @@
+/*******************************************************************************************
+  Biamp Tesira 双机热备（一主一备） - SIMPL+ 薄壳
+  逻辑在 C# 库 CrestronDeviceLibrary 的 RedundantBiampMatrix（RedundantAudioMatrix<BiampTesiraMatrix>）。
+  本文件只做引脚接线 + 主备 IP/标签配置。
+
+  冗余特性（与单台 Biamp_Tesira.usp 兼容：控制/反馈引脚布局完全一致）：
+    - 主用(Primary) + 备用(Backup) 两台同时连接，所有命令镜像到两端，配置始终一致；
+    - 平时控制主用；主用断连立即切到备用（leader 切换，用户无感软切换）；
+    - 主用恢复后自动重新同步并切回主用（主用优先）；
+    - 反馈只转发当前激活(leader)设备，故 VTP 引脚与单台完全一致；
+    - 额外提供（引脚在符号最末尾，不挤占单台版任何 join）：主用在线 primary_online_fb / 备用在线 backup_online_fb + 状态文本 status_tx$[1]（反馈哪台掉线）。
+
+  协议/规则/引脚布局：同 Biamp_Tesira.usp（id 映射见 fnDigital/fnAnalog/fnSerial）。
+  库引用：#USER_SIMPLSHARP_LIBRARY "CrestronDeviceLibrary"
+*******************************************************************************************/
+
+#SYMBOL_NAME "Redundant_Biamp_Tesira"
+#DEFINE_CONSTANT CH 16
+
+// =====================================================================
+//  [主用 / 备用设备连接配置] 改这里，改完重新编译（F12）
+// =====================================================================
+#DEFINE_CONSTANT PRIMARY_IP       "192.168.0.24"
+#DEFINE_CONSTANT BACKUP_IP        "192.168.0.25"
+#DEFINE_CONSTANT DEVICE_PORT       23
+#DEFINE_CONSTANT DEVICE_USERNAME  "default"
+#DEFINE_CONSTANT DEVICE_PASSWORD  "default"
+#DEFINE_CONSTANT IN_LEVEL_TAG     "Level1"      // 输入电平/静音块
+#DEFINE_CONSTANT OUT_LEVEL_TAG    "Level2"      // 输出电平/静音块
+#DEFINE_CONSTANT MIXER_TAG        "Mixer1"      // 矩阵混音块
+#DEFINE_CONSTANT IN_METER_TAG     "AudioMeter1" // 输入信号表块
+#DEFINE_CONSTANT OUT_METER_TAG    "AudioMeter2" // 输出信号表块（"none" = 不轮询音量表）
+
+#DEFAULT_VOLATILE
+#ENABLE_TRACE
+
+#USER_SIMPLSHARP_LIBRARY "CrestronDeviceLibrary"
+
+// ===== 变量区（SIMPL+ 规则：所有单个变量/串口缓冲必须在所有数组声明之前） =====
+STRING primary_ip$[32];
+STRING backup_ip$[32];
+STRING in_level_tag$[50];
+STRING out_level_tag$[50];
+STRING mixer_tag$[50];
+STRING in_meter_tag$[50];
+STRING out_meter_tag$[50];
+STRING username$[50];
+STRING password$[50];
+INTEGER _selOutN;            // 当前选中的输出（切回矩阵页时同步给 C#）
+
+// 输入变量
+DIGITAL_INPUT mode1, mode2, mode3, mode4, mode5, allmute, _skip_;
+DIGITAL_INPUT mixpage_fb, mixin_button_fb, mixout_button_fb;
+// 输出变量
+DIGITAL_OUTPUT mode1fb, mode2fb, mode3fb, mode4fb, mode5fb, allmuteFb, _skip_;
+DIGITAL_OUTPUT _skip_, _skip_, _skip_;
+
+// ===== 数组区（与单台 Biamp_Tesira.usp 完全一致，便于 VTP 复用同一套 join） =====
+DIGITAL_INPUT Matrx_IN[CH], _skip_;
+DIGITAL_INPUT INmute[CH], _skip_;
+DIGITAL_INPUT Matrx_OUT[CH], _skip_;
+DIGITAL_INPUT OUTmute[CH], _skip_;
+ANALOG_INPUT Level_analogIN[CH], _skip_;
+ANALOG_INPUT Level_analogOUT[CH], _skip_;
+ANALOG_INPUT _reserved[1];
+DIGITAL_INPUT Matrx_IN_audio_jia[CH];
+DIGITAL_INPUT Matrx_IN_audio_jian[CH];
+DIGITAL_INPUT Matrx_OUT_audio_jia[CH];
+DIGITAL_INPUT Matrx_OUT_audio_jian[CH];
+DIGITAL_INPUT _reserved2[1];
+DIGITAL_INPUT _skip_, _skip_, _skip_;                // 平衡：冗余数字输出 3 个（primary_online_fb + backup_online_fb + _reserved3 占位），补 3 个数字输入使输入/输出总数相等（引脚对齐）
+DIGITAL_OUTPUT MatrxINFb[CH], _skip_;
+DIGITAL_OUTPUT INmuteFb[CH], _skip_;
+DIGITAL_OUTPUT MatrxOUTFb[CH], _skip_;
+DIGITAL_OUTPUT OUTmuteFb[CH], _skip_;
+DIGITAL_OUTPUT _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_;
+DIGITAL_OUTPUT _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_;
+DIGITAL_OUTPUT _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_;
+DIGITAL_OUTPUT _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_;
+DIGITAL_OUTPUT _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_;
+DIGITAL_OUTPUT _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_;
+DIGITAL_OUTPUT _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_;
+DIGITAL_OUTPUT _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_;
+DIGITAL_OUTPUT _skip_;
+ANALOG_OUTPUT Level_analogINFb[CH], _skip_;
+ANALOG_OUTPUT level_analogOUTFb[CH], _skip_;
+ANALOG_OUTPUT Meter_analogINFb[CH];
+ANALOG_OUTPUT Meter_analogOUTFb[CH];
+STRING_OUTPUT mix_tx[CH];
+STRING_OUTPUT level_tx$[32];  // 必须 = 2*CH；SIMPL+ 数组维度不接受 2*CH 表达式，故用字面量
+
+// ===== 冗余状态反馈引脚（追加在末尾，不挤占单台版任何 join，VTP 可原样复用） =====
+// ★ 关键：SIMPL+ 会把"每个方向最后一个数组"折叠成 [#]，折叠后 C# 写该引脚会抛
+//   KeyNotFoundException → 模块崩溃 → VTP 显示离线 + 控制失效（问题A/问题B 根因）。
+//   修复：把 primary/backup 拆到独立行，并在尾部各加一个真数组占位，让占位成为
+//   最后一个被折叠的对象，真正的反馈引脚保留 [1]（.ush 里见 xxx[1] 即成功）。
+DIGITAL_OUTPUT primary_online_fb[1];                  // [1]主用在线：1=在线 0=掉线
+DIGITAL_OUTPUT backup_online_fb[1];                   // [1]备用在线：1=在线 0=掉线
+DIGITAL_OUTPUT _reserved3[1];                         // 真数组占位：防 primary/backup_online_fb 被折叠成 [#]
+STRING_OUTPUT  status_tx$[1];                         // [1]=状态文本（人读，如"主用掉线，已切备用"）
+STRING_OUTPUT  _reserved4$[1];                        // 真数组占位：防 status_tx$ 被折叠成 [#]
+
+// ---------------- 库对象（声明即实例化，不要写 new） ----------------
+RedundantBiampMatrix rmatrix;
+
+// ---------------- 主函数：绑定输出委托 + 配置 + 连接 ----------------
+Function Main()
+{
+    RegisterDelegate(rmatrix, DigitalFb,       fnDigital);
+    RegisterDelegate(rmatrix, AnalogFb,        fnAnalog);
+    RegisterDelegate(rmatrix, SerialFb,        fnSerial);
+    RegisterDelegate(rmatrix, PrimaryOnlineFb, fnPrimaryOnline);
+    RegisterDelegate(rmatrix, BackupOnlineFb,  fnBackupOnline);
+    RegisterDelegate(rmatrix, StatusTextFb,    fnStatusText);
+
+    // 通道数（值在文件头部 #DEFINE_CONSTANT CH 改）
+    rmatrix.ConfigureChannelsBiamp(CH);
+
+    // 实例标签（主备两台须用同一套 Tesira 设计，标签相同）
+    in_level_tag$  = IN_LEVEL_TAG;
+    out_level_tag$ = OUT_LEVEL_TAG;
+    mixer_tag$     = MIXER_TAG;
+    in_meter_tag$  = IN_METER_TAG;
+    out_meter_tag$ = OUT_METER_TAG;
+    username$      = DEVICE_USERNAME;
+    password$      = DEVICE_PASSWORD;
+    rmatrix.ConfigureTags(in_level_tag$, out_level_tag$, mixer_tag$, in_meter_tag$, out_meter_tag$);
+    rmatrix.ConfigureCredentials(username$, password$);
+
+    // 主备 IP/端口
+    primary_ip$ = PRIMARY_IP;
+    backup_ip$  = BACKUP_IP;
+    rmatrix.ConfigurePrimary(primary_ip$, DEVICE_PORT);
+    rmatrix.ConfigureBackup(backup_ip$, DEVICE_PORT);
+
+    rmatrix.Start();   // 同时连接主备 + 订阅，命令镜像到两端
+    WaitForInitializationComplete();
+}
+
+// ---------------- 静音 ----------------
+PUSH INmute  { INTEGER n; n = GetLastModifiedArrayIndex(); rmatrix.ToggleInputMute(n); }
+PUSH OUTmute { INTEGER n; n = GetLastModifiedArrayIndex(); rmatrix.ToggleOutputMute(n); }
+PUSH allmute { rmatrix.AllMute(1); }
+
+// ---------------- 电平加减 ----------------
+PUSH Matrx_IN_audio_jia  { INTEGER n; n = GetLastModifiedArrayIndex(); rmatrix.InputLevelAdd(n); }
+PUSH Matrx_IN_audio_jian { INTEGER n; n = GetLastModifiedArrayIndex(); rmatrix.InputLevelSub(n); }
+PUSH Matrx_OUT_audio_jia { INTEGER n; n = GetLastModifiedArrayIndex(); rmatrix.OutputLevelAdd(n); }
+PUSH Matrx_OUT_audio_jian{ INTEGER n; n = GetLastModifiedArrayIndex(); rmatrix.OutputLevelSub(n); }
+
+// ---------------- 混音路由 ----------------
+// PUSH Matrx_OUT 追踪当前选中的输出（用 SIMPL+ 全局变量 _selOutN 记录）
+// SIMPL+ 里 DIGITAL_OUTPUT 不可读，所以用 PUSH 副作用追踪。
+PUSH Matrx_OUT
+{
+    INTEGER n;
+    n = GetLastModifiedArrayIndex();
+    _selOutN = n;
+    rmatrix.SelectOutput(n);
+}
+PUSH Matrx_IN  { INTEGER n; n = GetLastModifiedArrayIndex(); rmatrix.ToggleRoute(n); }
+
+// ---------------- 电平推子（模拟量 -> C# 换算 dB 后发送） ----------------
+CHANGE Level_analogIN  { INTEGER n; n = GetLastModifiedArrayIndex(); rmatrix.SetInputLevelAnalog(n, Level_analogIN[n]); }
+CHANGE Level_analogOUT { INTEGER n; n = GetLastModifiedArrayIndex(); rmatrix.SetOutputLevelAnalog(n, Level_analogOUT[n]); }
+
+// ---------------- 预设 ----------------
+PUSH mode1 { rmatrix.LoadPreset(1);  mode1fb=1; mode2fb=0; mode3fb=0; mode4fb=0; mode5fb=0; }
+PUSH mode2 { rmatrix.LoadPreset(2);  mode1fb=0; mode2fb=1; mode3fb=0; mode4fb=0; mode5fb=0; }
+PUSH mode3 { rmatrix.LoadPreset(3);  mode1fb=0; mode2fb=0; mode3fb=1; mode4fb=0; mode5fb=0; }
+PUSH mode4 { rmatrix.LoadPreset(4);  mode1fb=0; mode2fb=0; mode3fb=0; mode4fb=1; mode5fb=0; }
+PUSH mode5 { rmatrix.LoadPreset(5);  mode1fb=0; mode2fb=0; mode3fb=0; mode4fb=0; mode5fb=1; }
+
+// ---------------- 页面打开时刷新电平/静音 ----------------
+CHANGE mixpage_fb
+{
+    INTEGER n;
+    IF(mixpage_fb)
+    {
+        // SIMPL+ 里 DIGITAL_OUTPUT 不可读，无法扫描 MatrxOUTFb 当前值。
+        // 改用 _selOutN 全局变量追踪（PUSH Matrx_OUT 时记录），进入页面同步给 C#。
+        IF (_selOutN = 0)
+        {
+            rmatrix.SelectOutput(1);
+        }
+        ELSE
+        {
+            rmatrix.SelectOutput(_selOutN);
+        }
+    }
+}
+
+// =====================================================================
+//  回调：数字反馈路由（id 见 BiampTesiraMatrix Fb* 常量；仅转发 leader 设备）
+// =====================================================================
+CALLBACK FUNCTION fnDigital(INTEGER id, INTEGER v)
+{
+    IF (id>=1 && id<=CH)
+    {
+        INmuteFb[id]=v;
+    }
+    ELSE IF (id>CH && id<=2*CH)
+    {
+        OUTmuteFb[id-CH]=v;
+    }
+    ELSE IF (id>2*CH && id<=3*CH)
+    {
+        MatrxINFb[id-2*CH]=v;
+    }
+    ELSE IF (id>3*CH && id<=4*CH)
+    {
+        MatrxOUTFb[id-3*CH]=v;
+    }
+    ELSE IF (id=4*CH+1)
+    {
+        mode1fb=v;
+    }
+    ELSE IF (id=4*CH+2)
+    {
+        mode2fb=v;
+    }
+    ELSE IF (id=4*CH+3)
+    {
+        mode3fb=v;
+    }
+    ELSE IF (id=4*CH+4)
+    {
+        mode4fb=v;
+    }
+    ELSE IF (id=4*CH+5)
+    {
+        mode5fb=v;
+    }
+    ELSE IF (id=4*CH+6)
+    {
+        allmuteFb=v;
+    }
+}
+
+// =====================================================================
+//  回调：模拟反馈路由
+// =====================================================================
+CALLBACK FUNCTION fnAnalog(INTEGER id, INTEGER v)
+{
+    IF (id>=1 && id<=CH)
+    {
+        Level_analogINFb[id]=v;
+    }
+    ELSE IF (id>CH && id<=2*CH)
+    {
+        level_analogOUTFb[id-CH]=v;
+    }
+    ELSE IF (id>2*CH && id<=3*CH)
+    {
+        Meter_analogINFb[id-2*CH]=v;
+    }
+    ELSE IF (id>3*CH && id<=4*CH)
+    {
+        Meter_analogOUTFb[id-3*CH]=v;
+    }
+}
+
+// =====================================================================
+//  回调：串口显示文本路由（1..2*CH -> level_tx$）
+// =====================================================================
+CALLBACK FUNCTION fnSerial(INTEGER id, STRING text$)
+{
+    IF (id>=1 && id<=2*CH)
+    {
+        level_tx$[id]=text$;
+    }
+}
+
+// =====================================================================
+//  回调：冗余状态反馈（新增）
+//    PrimaryOnlineFb / BackupOnlineFb：1=在线 0=掉线（直接看出哪台挂了）
+//    StatusTextFb：人读状态文本（主备状态一目了然）
+// =====================================================================
+CALLBACK FUNCTION fnPrimaryOnline(INTEGER id, INTEGER v)
+{
+    primary_online_fb[1] = v;   // 主用在线：1=在线 0=掉线
+}
+CALLBACK FUNCTION fnBackupOnline(INTEGER id, INTEGER v)
+{
+    backup_online_fb[1] = v;   // 备用在线：1=在线 0=掉线
+}
+CALLBACK FUNCTION fnStatusText(INTEGER id, STRING text$)
+{
+    status_tx$[1] = text$;
+}

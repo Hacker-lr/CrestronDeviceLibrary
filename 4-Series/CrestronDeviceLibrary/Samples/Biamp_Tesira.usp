@@ -36,7 +36,8 @@
 #USER_SIMPLSHARP_LIBRARY "CrestronDeviceLibrary"
 
 // ===== 变量区（SIMPL+ 规则：所有单个变量/串口缓冲必须在所有数组声明之前） =====
-STRING device_ip$[32];          // 设备 IP（Main() 里由头部 DEVICE_IP 赋值）
+STRING device_ip$[32];
+INTEGER _selOutN;            // 当前选中的输出（切回矩阵页时同步给 C#）          // 设备 IP（Main() 里由头部 DEVICE_IP 赋值）
 STRING in_level_tag$[50];       // 实例标签（Main() 里由头部常量赋值）
 STRING out_level_tag$[50];
 STRING mixer_tag$[50];
@@ -128,7 +129,13 @@ PUSH Matrx_OUT_audio_jia { INTEGER n; n = GetLastModifiedArrayIndex(); matrix.Ou
 PUSH Matrx_OUT_audio_jian{ INTEGER n; n = GetLastModifiedArrayIndex(); matrix.OutputLevelSub(n); }
 
 // ---------------- 混音路由 ----------------
-PUSH Matrx_OUT { INTEGER n; n = GetLastModifiedArrayIndex(); matrix.SelectOutput(n); }
+PUSH Matrx_OUT
+{
+    INTEGER n;
+    n = GetLastModifiedArrayIndex();
+    _selOutN = n;
+    matrix.SelectOutput(n);
+}
 PUSH Matrx_IN  { INTEGER n; n = GetLastModifiedArrayIndex(); matrix.ToggleRoute(n); }
 
 // ---------------- 电平推子（模拟量 -> C# 换算 dB 后发送） ----------------
@@ -145,9 +152,19 @@ PUSH mode5 { matrix.LoadPreset(5);  mode1fb=0; mode2fb=0; mode3fb=0; mode4fb=0; 
 // ---------------- 页面打开时刷新电平/静音 ----------------
 CHANGE mixpage_fb
 {
+    INTEGER n;
     IF(mixpage_fb)
     {
-        matrix.ReadMixRoute(1);
+        // SIMPL+ 里 DIGITAL_OUTPUT 不可读，无法扫描 MatrxOUTFb 当前值。
+        // 改用 _selOutN 全局变量追踪（PUSH Matrx_OUT 时记录），进入页面同步给 C#。
+        IF (_selOutN = 0)
+        {
+            matrix.SelectOutput(1);
+        }
+        ELSE
+        {
+            matrix.SelectOutput(_selOutN);
+        }
     }
 }
 
