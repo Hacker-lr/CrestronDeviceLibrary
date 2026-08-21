@@ -24,6 +24,9 @@ SPlsWork/
 # ---- 打包/备份 ----
 *.zip
 
+# ---- 与项目无关的 VS2008 安装镜像（本地保留不入库）----
+Microsoft Visual Studio 2008/
+
 # ---- IDE / 编辑器 ----
 .vscode/
 .vs/
