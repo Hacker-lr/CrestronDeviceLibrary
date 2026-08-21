@@ -1,8 +1,10 @@
 # CrestronDeviceLibrary
 
-Crestron 4-Series 中控项目：SIMPL# C# 设备库 + SIMPL+ 模块 + SIMPL Windows 主程序。
+Crestron 3 系列 / 4 系列中控通用 SIMPL# 设备库：C# 类库 + SIMPL+ 模块 + SIMPL Windows 主程序。
 
 面向的设备控制场景：音频矩阵（StageCraft / IPS Libra）、摄像机（Sony VISCA）、电源时序器、视频矩阵、LED 控制器、门禁、继电器等。
+
+支持**双机热备冗余**（主/备音频处理器、自动切换、双向状态同步）。
 
 ---
 
@@ -10,20 +12,54 @@ Crestron 4-Series 中控项目：SIMPL# C# 设备库 + SIMPL+ 模块 + SIMPL Win
 
 ```
 CrestronDeviceLibrary-repo/
-├── CrestronDeviceLibrary/          # C# SIMPL# 类库（VS 工程，编译产出 .clz）
-│   ├── Devices/
-│   │   ├── StageCraftMatrix.cs     # 16×16 音频矩阵（TCP 直连，核心模块）
-│   │   └── SonyViscaCamera.cs      # Sony VISCA 摄像机
-│   ├── Common/
-│   │   ├── PacketBuilder.cs        # SIMPL# ↔ SIMPL+ 数据转换
-│   │   └── ResponseParser.cs       # 应答解析
-│   ├── DeviceManager.cs            # 设备管理器
-│   └── Samples/                    # SIMPL+ 薄壳示例（.usp）
+├── 4-Series/                       # ★ 4 系列工程（MC4，VTP 主用）
+│   ├── CrestronDeviceLibrary.sln   # 4 代解决方案（唯一）
+│   └── CrestronDeviceLibrary/      # C# SIMPL# 类库（编译产出 .clz）
+│       ├── Devices/
+│       │   ├── StageCraftMatrix.cs            # 16×16 音频矩阵（TCP 直连，核心模块）
+│       │   ├── RedundantAudioMatrix.cs        # 双机热备冗余矩阵（主备+同步+切换）
+│       │   ├── RedundantBiampTesira.cs        # 双机热备 Biamp 音频处理器
+│       │   └── SonyViscaCamera.cs             # Sony VISCA 摄像机
+│       ├── Common/
+│       │   ├── PacketBuilder.cs               # SIMPL# ↔ SIMPL+ 数据转换
+│       │   └── ResponseParser.cs              # 应答解析
+│       └── CrestronDeviceLibrary.csproj       # 单一 csproj（VS .NET 4.7.2 + SDK 2.21.274）
+├── 3-Series/                       # ★ 3 系列工程（MC3 运行库）
+│   ├── CrestronDeviceLibrary.sln   # 3 代解决方案
+│   └── CrestronDeviceLibrary/      # 通过 <link> 共享 4-Series 源码编译
+├── Samples/                        # SIMPL+ 薄壳 .usp（单台/冗余，详见下）
+│   ├── AudioMatrix_StageCraft.usp
+│   ├── Biamp_Tesira.usp
+│   ├── Redundant_AudioMatrix_StageCraft.usp
+│   └── Redundant_Biamp_Tesira.usp
 └── SIMPL-cp4/                      # SIMPL Windows 项目（cp4 处理器）
     ├── Demo.smw                    # 主程序
-    ├── AudioMatrix_StageCraft.usp  # 音频矩阵模块（与 C# 库联动）
-    └── *.usp / *.ush               # 其余设备模块（电源/视频矩阵/LED/门禁等）
+    └── *.usp / *.ush               # 设备模块（与 C# 库联动）
 ```
+
+> 保留一份 C# 源码（存于 `4-Series/`），`3-Series/` 工程通过 csproj 的 `<link>` 共享同一批 `.cs`，**改一处 3 代 4 代同时生效**。仅释放 `.clz` 时两端需各自编译。
+
+## 双机热备冗余（RedundantAudioMatrix）
+
+`SIMPL+ 薄壳 + C# 泛型<主,备>` 架构，支持任意"主从两类设备"配对（目前用于 StageCraft 与 Biamp）。
+
+- **主备双连接**：各自的 TCP 连接 + 登录/轮询，状态独立互不阻塞。
+- **角色与切换**：设备在线即为主；主掉线自动切备用，恢复在线自动切回（回切无瞬断）。
+- **双向同步（Mirror）**：静音/电平/路由的变更自动镜像到对端，中控始终只显示"主用"状态源（`_syncingToPeer` 防回环）。
+- **状态同步**：`SyncToPeer` 将设备端手动改动（含**路由**）同步给对端，配合镜像保证两端状态一致、VTP 显示及时刷新。
+- **折叠防护**：SIMPL+ 反馈引脚用真数组占位（如 `_reserved3[1]`）防止被编译器折叠成 `[#]`；折叠会导致 C# `RaiseStatus()` 抛 `KeyNotFoundException` → 模块崩溃 → 显示离线。`.ush` 里见 `xxx[1]` 即展开成功。
+
+> 曾修复：路由从机端改动不同步到主机/中控（`SyncToPeer` 跳过路由）；同步后出现主备路由"激活/取消交替闪烁"（`ToggleRoute` 沿用设备回读取反而非镜像绝对 `SetRoute`，现已改为镜像绝对状态）。
+
+## 文件同步规则（重要，多目录踩坑）
+
+`CrestronDeviceLibrary.clz` 与 `.usp` 需保持**三处同步**：
+
+1. SIMPL 工程目录 `D:\Crestron\projector\Demo\simpl\cp4\`
+2. 桌面测试目录 `D:\Crestron\Desktop\cp4\`（或对应测试目录）
+3. 宏源码库 Samples 目录
+
+`.usp` 文件**必须 CRLF 行尾**——LF 会被 SIMPL+ 编译器静默吞掉声明区（不报错但产出 0 个引脚，`.ush` 中 `MinVariableInputs=0`）。保存时确认编辑器行尾为 "CRLF"。`3-Series/4-Series` C# 修改一次即可，但 `.clz` 需 3 代、4 代各编一份分别部署。
 
 ## 架构
 
@@ -92,15 +128,16 @@ matrix.StartLevelPolling(250);        // 电平/音量表/静音 轮询（250ms 
 
 ## 构建与部署
 
-**C# 库**：
+**C# 库**（3 代、4 代各一份）：
 
-1. VS 打开 `CrestronDeviceLibrary/CrestronDeviceLibrary.csproj`（.NET 4.7.2 + Crestron SimplSharp SDK 2.21.274 NuGet）
-2. 编译，`bin/Debug/CrestronDeviceLibrary.clz` 即产物
+1. 4 代：VS 打开 `4-Series/CrestronDeviceLibrary.sln` → 编译 → `4-Series/CrestronDeviceLibrary/bin/Debug/CrestronDeviceLibrary.clz`（约 3.98 MB）
+2. 3 代：VS 打开 `3-Series/CrestronDeviceLibrary.sln` → 编译 → `3-Series/CrestronDeviceLibrary/bin/Debug/CrestronDeviceLibrary.clz`（约 1.21 MB）
+3. 把对应 `.clz` 放入相应中控的 SIMPL 项目目录（工程 cp4 / 桌面 cp4 / Samples 三处同步）。
 
 **SIMPL+ 模块**：
 
 1. SIMPL+ 编辑器打开 `.usp`，按 **F12** 编译生成 `.ush`
-2. 编译前把 `CrestronDeviceLibrary.clz` 放到 SIMPL 项目目录
+2. 编译前确认 `CrestronDeviceLibrary.clz` 已放 SIMPL 项目目录、`.usp` 为 CRLF 行尾
 3. SIMPL Windows 里重新编译程序 → Toolbox 上传 `.lpz`
 
 **部署注意**：
@@ -123,10 +160,18 @@ matrix.StartLevelPolling(250);        // 电平/音量表/静音 轮询（250ms 
 **SSH 直连调试**（推荐，比截图快得多）：中控处理器开 SSH 后可用 paramiko 直连，
 `progstop -p:01` / `progstart -p:01` 控制程序，console 里能实时看到 `CrestronConsole.PrintLine` 输出。
 
-## 已验证功能（音频矩阵）
+## 已验证功能
+
+**音频矩阵（单台 StageCraft）**：
 
 - 输入/输出增益加减与实时电平显示（250ms 全 16 路轮询）
-- 静音/取消静音（含电平归零联动）
+- 静音/取消静音（仅熄灭音量表，**不影响电平推子**设定值）
 - 混音路由设置与已路由输入高亮反馈
 - 预设调用
 - 断线自动重连（5s 间隔）
+
+**双机热备冗余（RedundantAudioMatrix / RedundantBiampTesira）**：
+
+- 主备同时在线，主掉线自动切备、恢复自动回切
+- 静音/电平/路由变更双向镜像同步，VTP 实时刷新
+- 从机端手动改路由 → 主机跟随 → 中控显示同步更新，无闪烁回环
