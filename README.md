@@ -12,32 +12,33 @@ Crestron 3 系列 / 4 系列中控通用 SIMPL# 设备库：C# 类库 + SIMPL+ �
 
 ```
 CrestronDeviceLibrary-repo/
-├── 4-Series/                       # ★ 4 系列工程（MC4，VTP 主用）
-│   ├── CrestronDeviceLibrary.sln   # 4 代解决方案（唯一）
-│   └── CrestronDeviceLibrary/      # C# SIMPL# 类库（编译产出 .clz）
+├── 4-Series/                          # ★ 4 系列工程（MC4，VTP 主用）
+│   ├── CrestronDeviceLibrary.sln      # 4 代解决方案（唯一）
+│   └── CrestronDeviceLibrary/         # C# SIMPL# 类库（编译产出 .clz）
 │       ├── Devices/
-│       │   ├── StageCraftMatrix.cs            # 16×16 音频矩阵（TCP 直连，核心模块）
-│       │   ├── RedundantAudioMatrix.cs        # 双机热备冗余矩阵（主备+同步+切换）
-│       │   ├── RedundantBiampTesira.cs        # 双机热备 Biamp 音频处理器
-│       │   └── SonyViscaCamera.cs             # Sony VISCA 摄像机
-│       ├── Common/
-│       │   ├── PacketBuilder.cs               # SIMPL# ↔ SIMPL+ 数据转换
-│       │   └── ResponseParser.cs              # 应答解析
-│       └── CrestronDeviceLibrary.csproj       # 单一 csproj（VS .NET 4.7.2 + SDK 2.21.274）
-├── 3-Series/                       # ★ 3 系列工程（MC3 运行库）
-│   ├── CrestronDeviceLibrary.sln   # 3 代解决方案
-│   └── CrestronDeviceLibrary/      # 通过 <link> 共享 4-Series 源码编译
-├── Samples/                        # SIMPL+ 薄壳 .usp（单台/冗余，详见下）
-│   ├── AudioMatrix_StageCraft.usp
-│   ├── Biamp_Tesira.usp
-│   ├── Redundant_AudioMatrix_StageCraft.usp
-│   └── Redundant_Biamp_Tesira.usp
-└── SIMPL-cp4/                      # SIMPL Windows 项目（cp4 处理器）
-    ├── Demo.smw                    # 主程序
-    └── *.usp / *.ush               # 设备模块（与 C# 库联动）
+│       │   ├── StageCraftMatrix.cs    # 16×16 音频矩阵（TCP 直连，核心模块）
+│       │   ├── RedundantAudioMatrix.cs# 双机热备冗余矩阵（主备+同步+切换）
+│       │   ├── BiampTesiraMatrix.cs   # Biamp Tesira 音频处理器
+│       │   └── SonyViscaCamera.cs     # Sony VISCA 摄像机
+│       ├── Common/                    # PacketBuilder / ResponseParser
+│       ├── DeviceManager.cs           # 设备管理器
+│       ├── CrestronDeviceLibrary.csproj  # VS .NET 4.7.2 + SDK 2.21.274
+│       └── Samples/                   # SIMPL+ 薄壳 .usp（单台/冗余）+ 有效 .clz
+│           ├── AudioMatrix_StageCraft.usp / .ush
+│           ├── Biamp_Tesira.usp / .ush
+│           ├── Redundant_AudioMatrix_StageCraft.usp
+│           ├── Redundant_Biamp_Tesira.usp
+│           ├── CAM_SONY_VISCA.usp
+│           └── CrestronDeviceLibrary.clz  # 4 代有效库（SPlsWork/ 编译工作区）
+├── 3-Series/                          # ★ 3 系列工程（MC3 运行库）
+│   ├── CrestronDeviceLibrary.sln      # 3 代解决方案
+│   └── CrestronDeviceLibrary/         # 通过 <link> 共享 4-Series 源码编译
+├── scripts-tools/                     # 调试工具脚本（mc3 console/errlog、抓日志等）
+├── packages/                          # 根/各工程 NuGet 还原包
+└── CrestronDeviceLibrary.sln          # （已删除，避免与 4/3 代混淆）
 ```
 
-> 保留一份 C# 源码（存于 `4-Series/`），`3-Series/` 工程通过 csproj 的 `<link>` 共享同一批 `.cs`，**改一处 3 代 4 代同时生效**。仅释放 `.clz` 时两端需各自编译。
+> `Samples/` 目录在 `4-Series/CrestronDeviceLibrary/Samples/`（不在仓库根）。三处同步指：SIMPL 工程目录、桌面测试目录、此 Samples 目录。
 
 ## 双机热备冗余（RedundantAudioMatrix）
 
@@ -56,8 +57,8 @@ CrestronDeviceLibrary-repo/
 `CrestronDeviceLibrary.clz` 与 `.usp` 需保持**三处同步**：
 
 1. SIMPL 工程目录 `D:\Crestron\projector\Demo\simpl\cp4\`
-2. 桌面测试目录 `D:\Crestron\Desktop\cp4\`（或对应测试目录）
-3. 宏源码库 Samples 目录
+2. 桌面测试目录 `C:\Users\YSL\Desktop\cp4\`
+3. 宏源码库 `4-Series\CrestronDeviceLibrary\Samples\`
 
 `.usp` 文件**必须 CRLF 行尾**——LF 会被 SIMPL+ 编译器静默吞掉声明区（不报错但产出 0 个引脚，`.ush` 中 `MinVariableInputs=0`）。保存时确认编辑器行尾为 "CRLF"。`3-Series/4-Series` C# 修改一次即可，但 `.clz` 需 3 代、4 代各编一份分别部署。
 
