@@ -1,0 +1,106 @@
+/*******************************************************************************************
+  MQTT 人体存在传感器（Tasmota 圆形版） - SIMPL+ 薄壳
+  说明：逻辑全在 C# 库 CrestronDeviceLibrary 里，本文件只做引脚接线。
+        中控自己当 MQTT broker（MqttMiniBroker，监听 1883），传感器直连中控 publish。
+        MqttPresenceSensor 负责解析 + 有人/延时熄灭状态机。
+
+  实时性：传感器 Rule1 已在 Switch1 变化时即时 publish stat/<topic>/POWER ON/OFF。
+  在线检测：tele/<topic>/LWT Online/Offline + broker keepalive(30s)x1.5 超时踢线。
+  距离/能量：此圆形版硬件不提供（雷达只接开关量），distance_fb/energy_fb 引脚预留。
+
+  规则（见 skill/README）：行尾必须 CRLF；SIMPL+ 无 new（声明即实例化）；
+  变量/串口缓冲必须声明在所有数组之前；库文件名须与 #USER_SIMPLSHARP_LIBRARY 一致。
+*******************************************************************************************/
+
+#SYMBOL_NAME "MQTT_PresenceSensor"
+
+// =====================================================================
+//  [配置区] 改这里，改完重新编译（F12）
+// =====================================================================
+#DEFINE_CONSTANT SENSOR_TOPIC    "huang"        // 传感器 MQTT topic（传感器网页/Tasmota 里配置）
+#DEFINE_CONSTANT BROKER_PORT     1883           // 中控本机监听端口（传感器 MqttHost 指向本中控 IP）
+#DEFINE_CONSTANT BROKER_USER     "frank"        // MQTT 账号（与传感器 MqttUser/Password 一致）
+#DEFINE_CONSTANT BROKER_PASS     "crestron"
+#DEFINE_CONSTANT OFF_DELAY_SEC   60             // 人走延时熄灭秒数
+
+#DEFAULT_VOLATILE
+#ENABLE_TRACE
+
+#USER_SIMPLSHARP_LIBRARY "CrestronDeviceLibrary"
+
+// ===== 变量区（SIMPL+ 规则：单变量必须在数组声明之前） =====
+STRING topic$[32];
+STRING user$[32];
+STRING pass$[32];
+
+// ===== 输入引脚 =====
+DIGITAL_INPUT force_off;        // 强制熄灭（外部联动）：1 期间 light_out 强制为 0
+
+// ===== 输出引脚 =====
+DIGITAL_OUTPUT presence_fb;     // 有人=1 / 无人=0（即时）
+DIGITAL_OUTPUT light_out;       // 灯光联动：有人立即 1，人走延时 OFF_DELAY_SEC 秒后 0
+DIGITAL_OUTPUT light_out_fb;    // 关灯输出：与 light_out 反相（有人=0，无人=1）
+DIGITAL_OUTPUT online_fb;       // 传感器在线
+ANALOG_OUTPUT  lux_fb;          // 光照 lux（BH1750，直出）
+ANALOG_OUTPUT  distance_fb;     // 预留：距离 cm
+ANALOG_OUTPUT  energy_fb;       // 预留：能量值
+STRING_OUTPUT  uptime_tx$[64];  // 传感器运行时间文本
+
+// ===== 库对象（声明即实例化，不要写 new） =====
+MqttPresenceSensor sensor;
+
+// ---------------- 主函数：绑定回调 + 配置 + 启动 broker ----------------
+Function Main()
+{
+    RegisterDelegate(sensor, DigitalFb, fnDigital);   // 数字反馈 -> _fb 引脚
+    RegisterDelegate(sensor, AnalogFb,  fnAnalog);    // 模拟反馈 -> lux/distance/energy
+    RegisterDelegate(sensor, SerialFb,  fnSerial);    // 串口反馈 -> 状态文本
+
+    topic$ = SENSOR_TOPIC;
+    user$  = BROKER_USER;
+    pass$  = BROKER_PASS;
+    sensor.Configure(topic$);
+    sensor.SetOffDelay(OFF_DELAY_SEC);
+    sensor.StartBroker(BROKER_PORT, user$, pass$);    // 启动本机 broker 并挂接本传感器
+    sensor.SetVerbose(1);                             // 调试期开日志（SSH console 可见），稳定后改 0
+    WaitForInitializationComplete();
+}
+
+// ---------------- 强制熄灭（外部联动） ----------------
+CHANGE force_off
+{
+    sensor.ForceOff(force_off);
+}
+
+// ---------------- 委托回调：把 C# 反馈写到输出引脚 ----------------
+CALLBACK FUNCTION fnDigital(INTEGER id, INTEGER v)
+{
+    IF (id = 1)       presence_fb = v;    // FbPresence
+    ELSE IF (id = 2)  light_out   = v;    // FbLightOut
+    ELSE IF (id = 3)  online_fb   = v;    // FbOnline
+    // light_out_fb：关灯输出（与 light_out 反相）——有人=0，无人=1
+    // ★ 必须用参数 v 判断，不能用信号名 light_out（SIMPL+ 信号赋值同事件内不立即生效）
+    IF (id = 2)
+    {
+        IF (v = 1)
+        {
+            light_out_fb = 0;    // 开灯
+        }
+        ELSE
+        {
+            light_out_fb = 1;    // 关灯
+        }
+    }
+}
+
+CALLBACK FUNCTION fnAnalog(INTEGER id, INTEGER v)
+{
+    IF (id = 1)       lux_fb      = v;    // FbLux
+    ELSE IF (id = 2)  distance_fb = v;    // FbDistance（预留）
+    ELSE IF (id = 3)  energy_fb   = v;    // FbEnergy（预留）
+}
+
+CALLBACK FUNCTION fnSerial(INTEGER id, STRING text$)
+{
+    IF (id = 1)       uptime_tx$  = text$; // FbUptime
+}

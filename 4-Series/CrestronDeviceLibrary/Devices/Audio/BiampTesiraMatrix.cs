@@ -860,8 +860,8 @@ namespace CrestronDeviceLibrary.Devices
             return (int)Math.Round((analog - AnalogMid) / (double)DbPerStep);
         }
 
-        /// <summary>音量表(VU) dB → 模拟量：-60dB→0，+12dB→65535 线性。</summary>
-        public static ushort MeterDbToAnalog(double db)
+        /// <summary>音量表(VU) dB → 模拟量：-60dB→0，+12dB→65535 线性。internal：仅类内部换算用，不对外暴露（double 参数不属于 SIMPL+ 类型系统）。</summary>
+        internal static ushort MeterDbToAnalog(double db)
         {
             double v = (db - MeterDbMin) * 65535.0 / (MeterDbMax - MeterDbMin);
             if (v < 0) v = 0;

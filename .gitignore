@@ -29,6 +29,7 @@ Microsoft Visual Studio 2008/
 
 # ---- IDE / 编辑器 ----
 .vscode/
+*.sln.cache
 .vs/
 *.user
 *.suo

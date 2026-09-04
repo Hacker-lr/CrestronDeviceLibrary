@@ -20,39 +20,93 @@
 // =====================================================================
 //  [主用 / 备用设备连接配置] 改这里，改完重新编译（F12）
 // =====================================================================
-#DEFINE_CONSTANT PRIMARY_IP       "192.168.0.24"
-#DEFINE_CONSTANT BACKUP_IP        "192.168.0.25"
-#DEFINE_CONSTANT DEVICE_PORT       23
-#DEFINE_CONSTANT DEVICE_USERNAME  "default"
-#DEFINE_CONSTANT DEVICE_PASSWORD  "default"
-#DEFINE_CONSTANT IN_LEVEL_TAG     "Level1"      // 输入电平/静音块
-#DEFINE_CONSTANT OUT_LEVEL_TAG    "Level2"      // 输出电平/静音块
-#DEFINE_CONSTANT MIXER_TAG        "Mixer1"      // 矩阵混音块
-#DEFINE_CONSTANT IN_METER_TAG     "AudioMeter1" // 输入信号表块
-#DEFINE_CONSTANT OUT_METER_TAG    "AudioMeter2" // 输出信号表块（"none" = 不轮询音量表）
 
 #DEFAULT_VOLATILE
 #ENABLE_TRACE
 
 #USER_SIMPLSHARP_LIBRARY "CrestronDeviceLibrary"
+// ===== 外部可编辑参数（SIMPL Windows 符号属性面板直接填）=====
+STRING_PARAMETER  PrimaryDeviceIP[32];
+STRING_PARAMETER  BackupDeviceIP[32];
+INTEGER_PARAMETER TcpPort;
+STRING_PARAMETER  DeviceUsername[32];
+STRING_PARAMETER  DevicePassword[32];
+STRING_PARAMETER  InputLevelTag[50];
+STRING_PARAMETER  OutputLevelTag[50];
+STRING_PARAMETER  MatrixMixerTag[50];
+STRING_PARAMETER  InputMeterTag[50];
+STRING_PARAMETER  OutputMeterTag[50];
+#BEGIN_PARAMETER_PROPERTIES PrimaryDeviceIP
+   propValidUnits = unitString;
+   propDefaultUnit = unitString;
+   propDefaultValue = "192.168.0.24";
+   propShortDescription = "Primary Tesira IP";
+#END_PARAMETER_PROPERTIES
+#BEGIN_PARAMETER_PROPERTIES BackupDeviceIP
+   propValidUnits = unitString;
+   propDefaultUnit = unitString;
+   propDefaultValue = "192.168.0.25";
+   propShortDescription = "Backup Tesira IP";
+#END_PARAMETER_PROPERTIES
+#BEGIN_PARAMETER_PROPERTIES TcpPort
+   propValidUnits = unitDecimal;
+   propDefaultUnit = unitDecimal;
+   propBounds = 1d, 65535d;
+   propDefaultValue = 23d;
+   propShortDescription = "TCP port (Telnet 23)";
+#END_PARAMETER_PROPERTIES
+#BEGIN_PARAMETER_PROPERTIES DeviceUsername
+   propValidUnits = unitString;
+   propDefaultUnit = unitString;
+   propDefaultValue = "default";
+   propShortDescription = "Login username";
+#END_PARAMETER_PROPERTIES
+#BEGIN_PARAMETER_PROPERTIES DevicePassword
+   propValidUnits = unitString;
+   propDefaultUnit = unitString;
+   propDefaultValue = "default";
+   propShortDescription = "Login password";
+#END_PARAMETER_PROPERTIES
+#BEGIN_PARAMETER_PROPERTIES InputLevelTag
+   propValidUnits = unitString;
+   propDefaultUnit = unitString;
+   propDefaultValue = "Level1";
+   propShortDescription = "Input Level Instance Tag";
+#END_PARAMETER_PROPERTIES
+#BEGIN_PARAMETER_PROPERTIES OutputLevelTag
+   propValidUnits = unitString;
+   propDefaultUnit = unitString;
+   propDefaultValue = "Level2";
+   propShortDescription = "Output Level Instance Tag";
+#END_PARAMETER_PROPERTIES
+#BEGIN_PARAMETER_PROPERTIES MatrixMixerTag
+   propValidUnits = unitString;
+   propDefaultUnit = unitString;
+   propDefaultValue = "Mixer1";
+   propShortDescription = "Matrix Mixer Instance Tag";
+#END_PARAMETER_PROPERTIES
+#BEGIN_PARAMETER_PROPERTIES InputMeterTag
+   propValidUnits = unitString;
+   propDefaultUnit = unitString;
+   propDefaultValue = "AudioMeter1";
+   propShortDescription = "Input AudioMeter Instance Tag";
+#END_PARAMETER_PROPERTIES
+#BEGIN_PARAMETER_PROPERTIES OutputMeterTag
+   propValidUnits = unitString;
+   propDefaultUnit = unitString;
+   propDefaultValue = "AudioMeter2";
+   propShortDescription = "Output AudioMeter Instance Tag";
+#END_PARAMETER_PROPERTIES
+
 
 // ===== 变量区（SIMPL+ 规则：所有单个变量/串口缓冲必须在所有数组声明之前） =====
-STRING primary_ip$[32];
-STRING backup_ip$[32];
-STRING in_level_tag$[50];
-STRING out_level_tag$[50];
-STRING mixer_tag$[50];
-STRING in_meter_tag$[50];
-STRING out_meter_tag$[50];
-STRING username$[50];
-STRING password$[50];
 INTEGER _selOutN;            // 当前选中的输出（切回矩阵页时同步给 C#）
 
 // 输入变量
-DIGITAL_INPUT mode1, mode2, mode3, mode4, mode5, allmute, _skip_;
+DIGITAL_INPUT _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, mode1, mode2, mode3, mode4, mode5, allmute, _skip_;
 DIGITAL_INPUT mixpage_fb, mixin_button_fb, mixout_button_fb;
 // 输出变量
-DIGITAL_OUTPUT mode1fb, mode2fb, mode3fb, mode4fb, mode5fb, allmuteFb, _skip_;
+DIGITAL_OUTPUT _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, mode1fb, mode2fb, mode3fb, mode4fb, mode5fb, allmuteFb, _skip_;
 DIGITAL_OUTPUT _skip_, _skip_, _skip_;
 
 // ===== 数组区（与单台 Biamp_Tesira.usp 完全一致，便于 VTP 复用同一套 join） =====
@@ -116,22 +170,11 @@ Function Main()
     // 通道数（值在文件头部 #DEFINE_CONSTANT CH 改）
     rmatrix.ConfigureChannelsBiamp(CH);
 
-    // 实例标签（主备两台须用同一套 Tesira 设计，标签相同）
-    in_level_tag$  = IN_LEVEL_TAG;
-    out_level_tag$ = OUT_LEVEL_TAG;
-    mixer_tag$     = MIXER_TAG;
-    in_meter_tag$  = IN_METER_TAG;
-    out_meter_tag$ = OUT_METER_TAG;
-    username$      = DEVICE_USERNAME;
-    password$      = DEVICE_PASSWORD;
-    rmatrix.ConfigureTags(in_level_tag$, out_level_tag$, mixer_tag$, in_meter_tag$, out_meter_tag$);
-    rmatrix.ConfigureCredentials(username$, password$);
-
-    // 主备 IP/端口
-    primary_ip$ = PRIMARY_IP;
-    backup_ip$  = BACKUP_IP;
-    rmatrix.ConfigurePrimary(primary_ip$, DEVICE_PORT);
-    rmatrix.ConfigureBackup(backup_ip$, DEVICE_PORT);
+    // 实例标签 + 凭据 + 主备 IP/端口（参数直传）
+    rmatrix.ConfigureTags(InputLevelTag, OutputLevelTag, MatrixMixerTag, InputMeterTag, OutputMeterTag);
+    rmatrix.ConfigureCredentials(DeviceUsername, DevicePassword);
+    rmatrix.ConfigurePrimary(PrimaryDeviceIP, TcpPort);
+    rmatrix.ConfigureBackup(BackupDeviceIP, TcpPort);
 
     rmatrix.Start();   // 同时连接主备 + 订阅，命令镜像到两端
     WaitForInitializationComplete();

@@ -1,0 +1,296 @@
+/*******************************************************************************************
+  TendZone 7216 音频处理器控制宏 - SIMPL+ 薄壳
+  所有逻辑（TCP 连接 / 协议组包解析 / 状态缓存 / 页面驱动轮询）在 C# 库
+  CrestronDeviceLibrary 的 TendZoneMatrix 类中，本宏只负责引脚接线与回调路由。
+
+  协议（与原版 TendZone_7216.usp 兼容）：
+  - 控制连接（ASCII，';' 结尾）：电平/静音/订阅上报/音量表/预设
+      set|gain_82|1|mute:true;   set|gain_82|1|step:1;   set|gain_82|1|gain:-7;
+      get|meter_85|1|level;      set|report|enable:true;   LOADP 3#
+  - 矩阵连接（二进制 82 7D...7D 82）：登录(admin) + 混音路由读/写
+  - 模块名（gain_82/gain_83/meter_85/meter_86）为东微配置软件生成，做成参数。
+
+  相对原版修复：
+  - 原版在 SIMPL+ 内读 DIGITAL_OUTPUT 判断状态恒为 0 → 静音/路由只能开不能关；C# 状态缓存修复。
+  - 原版 meter while 死循环且 16 路 get 互相覆盖只发第 12 路 → CTimer 页面驱动轮询，16 路合并发送。
+  - 原版 mode1/2 把 ASCII 命令 LOADP 13# 发到二进制口 → 统一 LOADP n# 发控制口。
+  - 原版路由读 do{}UNTIL(1) 同步等待可能死循环 → 异步解析。
+
+  使用要点：
+  - 本文件必须 CRLF 行尾（SIMPL+ 硬规则），UTF-8 编码（中文注释）。
+  - 修改后需先在 VS 重新编译 CrestronDeviceLibrary（4 系 .clz）并拷到本目录，
+    然后在 SIMPL+ 编辑器 F12 编译本宏，SIMPL Windows 里删掉旧符号从 Toolbox 重拖。
+
+#HELP_BEGIN
+TendZone 7216 audio matrix controller - dual TCP (ASCII control + binary matrix).
+
+PARAMETERS:
+  DeviceIPAddress  - TendZone processor IP address.
+  ControlTcpPort   - TCP port of ASCII control protocol (level/mute/report/meter/preset).
+  MatrixTcpPort    - TCP port of binary matrix protocol (login + crosspoint route). Same as ControlTcpPort if single port.
+  InputGainName    - Input gain module name from TendZone config software (default 'gain_82').
+  OutputGainName   - Output gain module name (default 'gain_83').
+  InputMeterName   - Input meter module name (default 'meter_85').
+  OutputMeterName  - Output meter module name (default 'meter_86').
+#HELP_END
+*******************************************************************************************/
+
+#SYMBOL_NAME "tend_7216"
+#DEFINE_CONSTANT CH 16
+
+#DEFAULT_VOLATILE
+#ENABLE_TRACE
+
+#USER_SIMPLSHARP_LIBRARY "CrestronDeviceLibrary"
+
+// ===================== 外部参数（SIMPL Windows 符号 Properties 双击填值）=====================
+// 规则：声明 N 个参数 → 首个 DIGITAL_INPUT/DIGITAL_OUTPUT 行前导 _skip_ 必须恰好 N 个（K=N）
+STRING_PARAMETER DeviceIPAddress[32];
+INTEGER_PARAMETER ControlTcpPort;
+INTEGER_PARAMETER MatrixTcpPort;
+STRING_PARAMETER InputGainName[20];
+STRING_PARAMETER OutputGainName[20];
+STRING_PARAMETER InputMeterName[20];
+STRING_PARAMETER OutputMeterName[20];
+
+#BEGIN_PARAMETER_PROPERTIES DeviceIPAddress
+   propValidUnits = unitString;
+   propDefaultUnit = unitString;
+   propDefaultValue = "192.168.0.200";
+   propShortDescription = "TendZone processor IP address";
+#END_PARAMETER_PROPERTIES
+#BEGIN_PARAMETER_PROPERTIES ControlTcpPort
+   propValidUnits = unitDecimal;
+   propDefaultUnit = unitDecimal;
+   propBounds = 1d, 65535d;
+   propDefaultValue = 5000d;
+   propShortDescription = "ASCII control protocol TCP port";
+#END_PARAMETER_PROPERTIES
+#BEGIN_PARAMETER_PROPERTIES MatrixTcpPort
+   propValidUnits = unitDecimal;
+   propDefaultUnit = unitDecimal;
+   propBounds = 1d, 65535d;
+   propDefaultValue = 5000d;
+   propShortDescription = "Binary matrix protocol TCP port (same as control if single port)";
+#END_PARAMETER_PROPERTIES
+#BEGIN_PARAMETER_PROPERTIES InputGainName
+   propValidUnits = unitString;
+   propDefaultUnit = unitString;
+   propDefaultValue = "gain_82";
+   propShortDescription = "Input gain module name (TendZone config software)";
+#END_PARAMETER_PROPERTIES
+#BEGIN_PARAMETER_PROPERTIES OutputGainName
+   propValidUnits = unitString;
+   propDefaultUnit = unitString;
+   propDefaultValue = "gain_83";
+   propShortDescription = "Output gain module name";
+#END_PARAMETER_PROPERTIES
+#BEGIN_PARAMETER_PROPERTIES InputMeterName
+   propValidUnits = unitString;
+   propDefaultUnit = unitString;
+   propDefaultValue = "meter_85";
+   propShortDescription = "Input meter module name";
+#END_PARAMETER_PROPERTIES
+#BEGIN_PARAMETER_PROPERTIES OutputMeterName
+   propValidUnits = unitString;
+   propDefaultUnit = unitString;
+   propDefaultValue = "meter_86";
+   propShortDescription = "Output meter module name";
+#END_PARAMETER_PROPERTIES
+
+// ===================== SIMPL+ 全局变量 =====================
+INTEGER _selOutN;            // 记录当前混音选中的输出通道（DIGITAL_OUTPUT 不可读，用 PUSH 副作用追踪）
+
+// ===================== 引脚声明 =====================
+// 7 个前导 _skip_ = 7 个参数槽；真实信号从第 8 列起；行尾 trailing _skip_ 必须保留
+DIGITAL_INPUT  _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_,
+               mode1, mode2, mode3, mode4, meter_flash, allmute, _skip_;
+DIGITAL_INPUT  mixpage_fb, mixin_button_fb, mixout_button_fb;
+DIGITAL_INPUT  Matrx_IN[CH], _skip_;
+DIGITAL_INPUT  INmute[CH], _skip_;
+DIGITAL_INPUT  Matrx_OUT[CH], _skip_;
+DIGITAL_INPUT  OUTmute[CH], _skip_;
+DIGITAL_INPUT  Matrx_IN_audio_jia[CH], _skip_;
+DIGITAL_INPUT  Matrx_IN_audio_jian[CH], _skip_;
+DIGITAL_INPUT  Matrx_OUT_audio_jia[CH], _skip_;
+DIGITAL_INPUT  Matrx_OUT_audio_jian[CH], _skip_;
+DIGITAL_INPUT  _reserved2[1];                         // 真数组占位：防 jian 数组折叠成 [#]
+ANALOG_INPUT   Level_analogIN[CH], _skip_;
+ANALOG_INPUT   Level_analogOUT[CH], _skip_;
+ANALOG_INPUT   _reserved[1];                          // 真数组占位：防 Level_analogOUT 折叠成 [#]
+
+DIGITAL_OUTPUT _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_,
+               mode1fb, mode2fb, mode3fb, mode4fb, meter_flash_fb, allmuteFb, _skip_;
+DIGITAL_OUTPUT _skip_, _skip_, _skip_;
+DIGITAL_OUTPUT MatrxINFb[CH], _skip_;
+DIGITAL_OUTPUT INmuteFb[CH], _skip_;
+DIGITAL_OUTPUT MatrxOUTFb[CH], _skip_;
+DIGITAL_OUTPUT OUTmuteFb[CH], _skip_;
+// 与输入侧 4 个按键数组对齐（每个 16+1=17 槽，共 68 槽）
+DIGITAL_OUTPUT _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_;
+DIGITAL_OUTPUT _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_;
+DIGITAL_OUTPUT _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_;
+DIGITAL_OUTPUT _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_;
+DIGITAL_OUTPUT _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_;
+DIGITAL_OUTPUT _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_;
+DIGITAL_OUTPUT _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_;
+DIGITAL_OUTPUT _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_;
+DIGITAL_OUTPUT _skip_, _skip_, _skip_, _skip_;                          // 68 槽对齐完成
+DIGITAL_OUTPUT _skip_;                                                  // 对齐输入侧 _reserved2[1]
+ANALOG_OUTPUT  Level_analogINFb[CH], _skip_;
+ANALOG_OUTPUT  level_analogOUTFb[CH], _skip_;
+ANALOG_OUTPUT  Meter_analogINFb[CH];
+ANALOG_OUTPUT  Meter_analogOUTFb[CH];
+STRING_OUTPUT  mix_tx[CH];      // 混音路由文本（预留，与原版引脚兼容）
+STRING_OUTPUT  level_tx$[32];   // 电平显示文本：1..16 输入，17..32 输出
+
+// ===================== C# 对象（声明即实例化，无 new）=====================
+TendZoneMatrix matrix;
+
+// ===================== Main：注册回调 + 配置参数 + 启动连接 =====================
+Function Main()
+{
+    RegisterDelegate(matrix, DigitalFb, fnDigital);   // C# 数字反馈 -> _fb 引脚
+    RegisterDelegate(matrix, AnalogFb,  fnAnalog);    // C# 模拟反馈 -> 电平/音量表
+    RegisterDelegate(matrix, SerialFb,  fnSerial);    // C# 串口反馈 -> 显示文本
+
+    matrix.ConfigurePorts(DeviceIPAddress, ControlTcpPort, MatrixTcpPort);
+    matrix.ConfigureNames(InputGainName, OutputGainName, InputMeterName, OutputMeterName);
+    matrix.Start();                                    // 建立双 TCP + 订阅上报 + 初始化
+    WaitForInitializationComplete();
+}
+
+// ===================== 静音 =====================
+PUSH INmute  { INTEGER n; n = GetLastModifiedArrayIndex(); matrix.ToggleInputMute(n); }
+PUSH OUTmute { INTEGER n; n = GetLastModifiedArrayIndex(); matrix.ToggleOutputMute(n); }
+PUSH allmute { matrix.AllMute(1); }
+
+// ===================== 电平加减 =====================
+PUSH Matrx_IN_audio_jia  { INTEGER n; n = GetLastModifiedArrayIndex(); matrix.InputLevelAdd(n); }
+PUSH Matrx_IN_audio_jian { INTEGER n; n = GetLastModifiedArrayIndex(); matrix.InputLevelSub(n); }
+PUSH Matrx_OUT_audio_jia { INTEGER n; n = GetLastModifiedArrayIndex(); matrix.OutputLevelAdd(n); }
+PUSH Matrx_OUT_audio_jian{ INTEGER n; n = GetLastModifiedArrayIndex(); matrix.OutputLevelSub(n); }
+
+// ===================== 混音路由 =====================
+PUSH Matrx_OUT
+{
+    INTEGER n;
+    n = GetLastModifiedArrayIndex();
+    _selOutN = n;
+    matrix.SelectOutput(n);
+}
+PUSH Matrx_IN  { INTEGER n; n = GetLastModifiedArrayIndex(); matrix.ToggleRoute(n); }
+
+// ===================== 电平推子（模拟量 -> C# 换算 dB）=====================
+CHANGE Level_analogIN  { INTEGER n; n = GetLastModifiedArrayIndex(); matrix.SetInputLevelAnalog(n, Level_analogIN[n]); }
+CHANGE Level_analogOUT { INTEGER n; n = GetLastModifiedArrayIndex(); matrix.SetOutputLevelAnalog(n, Level_analogOUT[n]); }
+
+// ===================== 预设模式 =====================
+PUSH mode1 { matrix.LoadPreset(1); mode1fb=1; mode2fb=0; mode3fb=0; mode4fb=0; }
+PUSH mode2 { matrix.LoadPreset(2); mode1fb=0; mode2fb=1; mode3fb=0; mode4fb=0; }
+PUSH mode3 { matrix.LoadPreset(3); mode1fb=0; mode2fb=0; mode3fb=1; mode4fb=0; }
+PUSH mode4 { matrix.LoadPreset(4); mode1fb=0; mode2fb=0; mode3fb=0; mode4fb=1; }
+
+// ===================== 音量表总开关（自锁：C# 内部翻转并回推 meter_flash_fb）=====================
+PUSH meter_flash { matrix.ToggleMeterFlash(); }
+
+// ===================== 页面驱动轮询 =====================
+// 进入对应页面时开启轮询，离开（mixpage_fb 松开）时停止
+CHANGE mixpage_fb
+{
+    INTEGER n;
+    IF (mixpage_fb)
+    {
+        // 恢复上次的输出选择（DIGITAL_OUTPUT 不可读，用 _selOutN 追踪）
+        IF (_selOutN = 0) { matrix.SelectOutput(1); }
+        ELSE              { matrix.SelectOutput(_selOutN); }
+        matrix.SetPollMode(3);       // 混音页
+    }
+    ELSE
+    {
+        matrix.SetPollMode(0);       // 离开页面停止轮询
+    }
+}
+CHANGE mixin_button_fb  { IF (mixin_button_fb)  { matrix.SetPollMode(1); } }
+CHANGE mixout_button_fb { IF (mixout_button_fb) { matrix.SetPollMode(2); } }
+
+// =====================================================================
+//  回调：C# 数字反馈 -> 引脚（id 见 TendZoneMatrix Fb* 常量）
+// =====================================================================
+CALLBACK FUNCTION fnDigital(INTEGER id, INTEGER v)
+{
+    IF (id>=1 && id<=CH)
+    {
+        INmuteFb[id]=v;
+    }
+    ELSE IF (id>CH && id<=2*CH)
+    {
+        OUTmuteFb[id-CH]=v;
+    }
+    ELSE IF (id>2*CH && id<=3*CH)
+    {
+        MatrxINFb[id-2*CH]=v;
+    }
+    ELSE IF (id>3*CH && id<=4*CH)
+    {
+        MatrxOUTFb[id-3*CH]=v;
+    }
+    ELSE IF (id=4*CH+1)
+    {
+        mode1fb=v;
+    }
+    ELSE IF (id=4*CH+2)
+    {
+        mode2fb=v;
+    }
+    ELSE IF (id=4*CH+3)
+    {
+        mode3fb=v;
+    }
+    ELSE IF (id=4*CH+4)
+    {
+        mode4fb=v;
+    }
+    ELSE IF (id=4*CH+5)
+    {
+        meter_flash_fb=v;
+    }
+    ELSE IF (id=4*CH+6)
+    {
+        allmuteFb=v;
+    }
+}
+
+// =====================================================================
+//  回调：C# 模拟反馈 -> 电平推子 / 音量表
+// =====================================================================
+CALLBACK FUNCTION fnAnalog(INTEGER id, INTEGER v)
+{
+    IF (id>=1 && id<=CH)
+    {
+        Level_analogINFb[id]=v;
+    }
+    ELSE IF (id>CH && id<=2*CH)
+    {
+        level_analogOUTFb[id-CH]=v;
+    }
+    ELSE IF (id>2*CH && id<=3*CH)
+    {
+        Meter_analogINFb[id-2*CH]=v;
+    }
+    ELSE IF (id>3*CH && id<=4*CH)
+    {
+        Meter_analogOUTFb[id-3*CH]=v;
+    }
+}
+
+// =====================================================================
+//  回调：C# 串口反馈 -> 电平显示文本（1..16 输入，17..32 输出）
+// =====================================================================
+CALLBACK FUNCTION fnSerial(INTEGER id, STRING text$)
+{
+    IF (id>=1 && id<=2*CH)
+    {
+        level_tx$[id]=text$;
+    }
+}

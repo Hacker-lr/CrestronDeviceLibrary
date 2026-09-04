@@ -1,59 +1,101 @@
 /*******************************************************************************************
-  示例：StageCraft 音频矩阵控制 - SIMPL+ 薄壳
-  说明：逻辑全在 C# 库 CrestronDeviceLibrary 的 StageCraftMatrix 里，本文件只做引脚接线。
-  规则（见 skill）：行尾必须 CRLF；SIMPL+ 无 new（声明即实例化）；类名用简单名。
-  已验证功能：音量加减、静音、混音路由。预设/音量表/电平查询已接，未上机实测。
-  实时电平：页面驱动轮询——进入对应页面时 CHANGE 事件调 SetPollMode(1/2/3)，离开调 SetPollMode(0)。
-            C# 侧 CTimer 周期轮询（不占 SIMPL+ 线程，不会卡死中控）。
-  引脚布局：数字输入与数字输出在 Detail View 中**对齐**（同一行是配对引脚）：
-            mode1↔mode1fb, Matrx_IN[i]↔MatrxINFb[i], INmute[i]↔INmuteFb[i] 等，
-            用 _skip_ 占位未用的 InputCue/OutputCue 槽位。
-            模拟/串口输入/输出（List2 区域）保持原有位置。
-  库引用：文件名须与 #USER_SIMPLSHARP_LIBRARY 一致（CrestronDeviceLibrary.clz）。
+  StageCraft  - SIMPL+ 
+   C#  CrestronDeviceLibrary  StageCraftMatrix 
+   skill CRLFSIMPL+  new
+  //
+   CHANGE  SetPollMode(1/2/3) SetPollMode(0)
+            C#  CTimer  SIMPL+ 
+   Detail View ****
+            mode1mode1fb, Matrx_IN[i]MatrxINFb[i], INmute[i]INmuteFb[i] 
+             _skip_  InputCue/OutputCue 
+            //List2 
+   #USER_SIMPLSHARP_LIBRARY CrestronDeviceLibrary.clz
+
+#HELP_BEGIN
+AudioMatrix_StageCraft controller - StageCraft matrix IP/network driver.
+
+PARAMETERS:
+  DeviceIPAddress - IP address of the StageCraft matrix (default 192.168.0.222).
+  TcpPort         - TCP port the device listens on (default 1698).
+
+INPUTS:
+  mode1..5         - Load preset (13/13/3/4/5).
+  allmute          - Mute all.
+  Matrx_IN[1..16]  - Toggle input->output crosspoint.
+  Matrx_OUT[1..16] - Select current output.
+  INmute[1..16]    - Toggle input mute.
+  OUTmute[1..16]   - Toggle output mute.
+
+OUTPUTS:
+  mode1fb..5fb  - Current mode feedback.
+  allmuteFb     - All mute feedback.
+  MatrxINFb[1..16] - Input/output crosspoint feedback.
+  INmuteFb[1..16]  - Input mute feedback.
+  OUTmuteFb[1..16] - Output mute feedback.
+#HELP_END
+
 *******************************************************************************************/
 
 #SYMBOL_NAME "AudioMatrix_StageCraft"
 #DEFINE_CONSTANT CH 16
-
-// =====================================================================
-//  [设备连接配置] 改这里，改完重新编译（F12）
-// =====================================================================
-#DEFINE_CONSTANT DEVICE_IP    "192.168.0.222"
-#DEFINE_CONSTANT DEVICE_PORT  1698
 
 #DEFAULT_VOLATILE
 #ENABLE_TRACE
 
 #USER_SIMPLSHARP_LIBRARY "CrestronDeviceLibrary"
 
-// ===== 变量区（SIMPL+ 规则：所有变量/串口缓冲必须在所有数组声明之前） =====
-STRING device_ip$[32];
-INTEGER _selOutN;            // 当前选中的输出（切回矩阵页时同步给 C#）   // 设备 IP 字符串（Main() 里由头部 DEVICE_IP 常量赋值）
-// 输入变量
-DIGITAL_INPUT mode1, mode2, mode3, mode4, mode5, allmute, _skip_;
+// =====================================================================
+//    SIMPL Windows   Properties/ 
+//     .usp/.clz  SIMPL 
+//  ------------------------------------------------------------------
+//  
+//    DeviceIPAddress      IP 
+//    TcpPort    TCP 
+// =====================================================================
+STRING_PARAMETER DeviceIPAddress[32];
+INTEGER_PARAMETER TcpPort;
+#BEGIN_PARAMETER_PROPERTIES DeviceIPAddress
+   propValidUnits = unitString;
+   propDefaultUnit = unitString;
+   propDefaultValue = "192.168.0.222";
+   propShortDescription = "StageCraft matrix IP address";
+#END_PARAMETER_PROPERTIES
+#BEGIN_PARAMETER_PROPERTIES TcpPort
+   propValidUnits = unitDecimal;
+   propDefaultUnit = unitDecimal;
+   propBounds = 1d, 65535d;
+   propDefaultValue = 1698d;
+   propShortDescription = "TCP port (default 1698)";
+#END_PARAMETER_PROPERTIES
+
+// ===== SIMPL+ / =====
+INTEGER _selOutN;            //  C#
+// 
+
+DIGITAL_INPUT _skip_, _skip_, mode1, mode2, mode3, mode4, mode5, allmute, _skip_;
 DIGITAL_INPUT mixpage_fb, mixin_button_fb, mixout_button_fb;
-// 输出变量
-DIGITAL_OUTPUT mode1fb, mode2fb, mode3fb, mode4fb, mode5fb, allmuteFb, _skip_;
+// 
+DIGITAL_OUTPUT _skip_, _skip_, mode1fb, mode2fb, mode3fb, mode4fb, mode5fb, allmuteFb, _skip_;
 DIGITAL_OUTPUT _skip_, _skip_, _skip_;
 
-// ===== 数组区（数字 4 大组在前；Level 组紧跟在 OUTmute / OUTmuteFb 下面，输入输出对称） =====
+// =====  4 Level  OUTmute / OUTmuteFb  =====
 DIGITAL_INPUT Matrx_IN[CH], _skip_;
 DIGITAL_INPUT INmute[CH], _skip_;
 DIGITAL_INPUT Matrx_OUT[CH], _skip_;
 DIGITAL_INPUT OUTmute[CH], _skip_;
-ANALOG_INPUT Level_analogIN[16], _skip_;         // 在 OUTmute 下面
-ANALOG_INPUT Level_analogOUT[16], _skip_;        // 在 Level_analogIN 下面
-ANALOG_INPUT _reserved[1];                        // dummy 占位：让 Level_analogOUT 不是 List2 最后一个数组 → 强制展开 16 行（删了会折叠回 [#]，Alt+ 无效，实测）
+ANALOG_INPUT Level_analogIN[16], _skip_;         //  OUTmute 
+ANALOG_INPUT Level_analogOUT[16], _skip_;        //  Level_analogIN 
+ANALOG_INPUT _reserved[1];                        // dummy  Level_analogOUT  List2    16  [#]Alt+ 
 DIGITAL_INPUT Matrx_IN_audio_jia[CH];
 DIGITAL_INPUT Matrx_IN_audio_jian[CH];
 DIGITAL_INPUT Matrx_OUT_audio_jia[CH];
 DIGITAL_INPUT Matrx_OUT_audio_jian[CH];
-DIGITAL_INPUT _reserved2[1];                        // dummy 真数组占位：让 jian 不是最后一个数组 → 强制展开 16 行（否则折叠成 [#] 缩 15 行，左右两列错位；同行 _skip_ 无效，必须真数组）
+DIGITAL_INPUT _reserved2[1];                        // dummy  jian    16  [#]  15  _skip_ 
 DIGITAL_OUTPUT MatrxINFb[CH], _skip_;
 DIGITAL_OUTPUT INmuteFb[CH], _skip_;
 DIGITAL_OUTPUT MatrxOUTFb[CH], _skip_;
 DIGITAL_OUTPUT OUTmuteFb[CH], _skip_;
-// ---- 对齐占位：数字输出补到与数字输入等长（143），使 List2 起点两侧一致，Level 组在 Detail View 全局视图同行 ----
+// ---- 143 List2 Level  Detail View  ----
 DIGITAL_OUTPUT _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_;
 DIGITAL_OUTPUT _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_;
 DIGITAL_OUTPUT _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_;
@@ -62,43 +104,42 @@ DIGITAL_OUTPUT _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_;
 DIGITAL_OUTPUT _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_;
 DIGITAL_OUTPUT _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_;
 DIGITAL_OUTPUT _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_;
-DIGITAL_OUTPUT _skip_;                                // 与输入 _reserved2[1] 配对（65 个）
-ANALOG_OUTPUT Level_analogINFb[16], _skip_;      // 在 OUTmuteFb 下面
-ANALOG_OUTPUT level_analogOUTFb[16], _skip_;     // 在 Level_analogINFb 下面
+DIGITAL_OUTPUT _skip_;                                //  _reserved2[1] 65 
+ANALOG_OUTPUT Level_analogINFb[16], _skip_;      //  OUTmuteFb 
+ANALOG_OUTPUT level_analogOUTFb[16], _skip_;     //  Level_analogINFb 
 ANALOG_OUTPUT Meter_analogINFb[16];
 ANALOG_OUTPUT Meter_analogOUTFb[16];
 STRING_OUTPUT mix_tx[16];
 STRING_OUTPUT level_tx$[32];
 
-// ---------------- 库对象（声明即实例化，不要写 new） ----------------
+// ----------------  new ----------------
 StageCraftMatrix matrix;
 
-// ---------------- 主函数：绑定输出委托 + 配置 + 登录 ----------------
+// ----------------  +  +  ----------------
 Function Main()
 {
-    RegisterDelegate(matrix, DigitalFb,  fnDigital);  // 数字反馈 -> _fb 引脚
-    RegisterDelegate(matrix, AnalogFb,   fnAnalog);   // 模拟反馈 -> 电平/音量表
-    RegisterDelegate(matrix, SerialFb,   fnSerial);   // 串口反馈 -> 显示文本
+    RegisterDelegate(matrix, DigitalFb,  fnDigital);  //  -> _fb 
+    RegisterDelegate(matrix, AnalogFb,   fnAnalog);   //  -> /
+    RegisterDelegate(matrix, SerialFb,   fnSerial);   //  -> 
 
-    device_ip$ = DEVICE_IP;                     // 完整 IP 字符串（值在文件头部配置区改）
-    matrix.Configure(device_ip$, DEVICE_PORT);  // IP + 端口（值在文件头部配置区改）
-    matrix.Start();                            // 直连设备并自动登录
-    // 轮询改为页面驱动：进入对应页面时 CHANGE 事件里调 SetPollMode(1/2/3)，离开调 SetPollMode(0)
+    matrix.Configure(DeviceIPAddress, TcpPort);  // IP + SIMPL Windows 
+    matrix.Start();                            // 
+    //  CHANGE  SetPollMode(1/2/3) SetPollMode(0)
     WaitForInitializationComplete();
 }
 
-// ---------------- 静音（已验证） ----------------
+// ----------------  ----------------
 PUSH INmute  { INTEGER n; n = GetLastModifiedArrayIndex(); matrix.ToggleInputMute(n); }
 PUSH OUTmute { INTEGER n; n = GetLastModifiedArrayIndex(); matrix.ToggleOutputMute(n); }
 PUSH allmute { matrix.AllMute(1); }
 
-// ---------------- 电平加减（已验证） ----------------
+// ----------------  ----------------
 PUSH Matrx_IN_audio_jia  { INTEGER n; n = GetLastModifiedArrayIndex(); matrix.InputLevelAdd(n); }
 PUSH Matrx_IN_audio_jian { INTEGER n; n = GetLastModifiedArrayIndex(); matrix.InputLevelSub(n); }
 PUSH Matrx_OUT_audio_jia { INTEGER n; n = GetLastModifiedArrayIndex(); matrix.OutputLevelAdd(n); }
 PUSH Matrx_OUT_audio_jian{ INTEGER n; n = GetLastModifiedArrayIndex(); matrix.OutputLevelSub(n); }
 
-// ---------------- 混音路由（已验证） ----------------
+// ----------------  ----------------
 PUSH Matrx_OUT
 {
     INTEGER n;
@@ -108,18 +149,18 @@ PUSH Matrx_OUT
 }
 PUSH Matrx_IN  { INTEGER n; n = GetLastModifiedArrayIndex(); matrix.ToggleRoute(n); }
 
-// ---------------- 电平推子（模拟量 -> C# 换算 dB 后发送） ----------------
+// ----------------  -> C#  dB  ----------------
 CHANGE Level_analogIN  { INTEGER n; n = GetLastModifiedArrayIndex(); matrix.SetInputLevelAnalog(n, Level_analogIN[n]); }
 CHANGE Level_analogOUT { INTEGER n; n = GetLastModifiedArrayIndex(); matrix.SetOutputLevelAnalog(n, Level_analogOUT[n]); }
 
-// ---------------- 预设（未验证） ----------------
+// ----------------  ----------------
 PUSH mode1 { matrix.LoadPreset(13); mode1fb=1; mode2fb=0; mode3fb=0; mode4fb=0; mode5fb=0; }
 PUSH mode2 { matrix.LoadPreset(13); mode1fb=0; mode2fb=1; mode3fb=0; mode4fb=0; mode5fb=0; }
 PUSH mode3 { matrix.LoadPreset(3);  mode1fb=0; mode2fb=0; mode3fb=1; mode4fb=0; mode5fb=0; }
 PUSH mode4 { matrix.LoadPreset(4);  mode1fb=0; mode2fb=0; mode3fb=0; mode4fb=1; mode5fb=0; }
 PUSH mode5 { matrix.LoadPreset(5);  mode1fb=0; mode2fb=0; mode3fb=0; mode4fb=0; mode5fb=1; }
 
-// ---------------- 页面驱动轮询（进入页面启动，离开停止） ----------------
+// ----------------  ----------------
 CHANGE mixpage_fb
 {
     INTEGER n;
@@ -127,29 +168,29 @@ CHANGE mixpage_fb
     found = 0;
     IF(mixpage_fb)
     {
-        // 进入矩阵页：先同步"当前高亮的输出"给 C#（VTP 自己记住了高亮状态，C# 不知道）
-        // 扫描 MatrxOUTFb 数组，找到高亮的那路（=1 的那路），调 SelectOutput 让 C# 同步
+        // "" C#VTP C# 
+        //  MatrxOUTFb =1  SelectOutput  C# 
         FOR (n = 1 TO CH)
         {
             IF (found = 0)
             {
                 IF (MatrxOUTFb[n])
                 {
-                    matrix.SelectOutput(n);   // C# 同步选中 + 读该输出路由
+                    matrix.SelectOutput(n);   // C#  + 
                 found = 1;
                 }
             }
         }
-        // 没有高亮（首次进入）：默认输出 1
+        //  1
         IF (found = 0)
         {
             matrix.SelectOutput(1);
         }
-        matrix.SetPollMode(3);   // 混音页：路由 + 当前输出电平/meter
+        matrix.SetPollMode(3);   //  + /meter
     }
     ELSE
     {
-        matrix.SetPollMode(0);   // 离开页面：停止轮询
+        matrix.SetPollMode(0);   // 
     }
 }
 
@@ -157,7 +198,7 @@ CHANGE mixout_button_fb
 {
     IF(mixout_button_fb)
     {
-        matrix.SetPollMode(2);   // 输出页：输出电平 + 输出 meter + 输出静音
+        matrix.SetPollMode(2);   //  +  meter + 
     }
     ELSE
     {
@@ -169,7 +210,7 @@ CHANGE mixin_button_fb
 {
     IF(mixin_button_fb)
     {
-        matrix.SetPollMode(1);   // 输入页：输入电平 + 输入 meter + 输入静音
+        matrix.SetPollMode(1);   //  +  meter + 
     }
     ELSE
     {
@@ -178,8 +219,8 @@ CHANGE mixin_button_fb
 }
 
 // =====================================================================
-//  回调：数字反馈路由（id 见 StageCraftMatrix Fb* 常量）
-//  注意：SIMPL+ 的 IF 必须带 { } 块，不能写 C 风格单行
+//  id  StageCraftMatrix Fb* 
+//  SIMPL+  IF  { }  C 
 // =====================================================================
 CALLBACK FUNCTION fnDigital(INTEGER id, INTEGER v)
 {
@@ -226,7 +267,7 @@ CALLBACK FUNCTION fnDigital(INTEGER id, INTEGER v)
 }
 
 // =====================================================================
-//  回调：模拟反馈路由
+//  
 // =====================================================================
 CALLBACK FUNCTION fnAnalog(INTEGER id, INTEGER v)
 {
@@ -249,7 +290,7 @@ CALLBACK FUNCTION fnAnalog(INTEGER id, INTEGER v)
 }
 
 // =====================================================================
-//  回调：串口显示文本路由（1..32 -> level_tx$）
+//  1..32 -> level_tx$
 // =====================================================================
 CALLBACK FUNCTION fnSerial(INTEGER id, STRING text$)
 {

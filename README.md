@@ -16,27 +16,37 @@ CrestronDeviceLibrary-repo/
 │   ├── CrestronDeviceLibrary.sln      # 4 代解决方案（唯一）
 │   └── CrestronDeviceLibrary/         # C# SIMPL# 类库（编译产出 .clz）
 │       ├── Devices/
-│       │   ├── StageCraftMatrix.cs    # 16×16 音频矩阵（TCP 直连，核心模块）
-│       │   ├── RedundantAudioMatrix.cs# 双机热备冗余矩阵（主备+同步+切换）
-│       │   ├── BiampTesiraMatrix.cs   # Biamp Tesira 音频处理器
-│       │   └── SonyViscaCamera.cs     # Sony VISCA 摄像机
-│       ├── Common/                    # PacketBuilder / ResponseParser
+│       │   ├── Audio/                 # 音频处理器（统一 IMatrixControl 契约）
+│       │   │   ├── StageCraftMatrix.cs     # 16×16 音频矩阵（TCP 直连，核心模块）
+│       │   │   ├── BiampTesiraMatrix.cs    # Biamp Tesira 音频处理器
+│       │   │   ├── TendZoneMatrix.cs       # TendZone（东微）7216 音频处理器（双协议）
+│       │   │   └── RedundantAudioMatrix.cs # 双机热备冗余矩阵（IMatrixControl + 泛型）
+│       │   ├── Camera/
+│       │   │   └── SonyViscaCamera.cs      # Sony VISCA 摄像机
+│       │   └── Mqtt/
+│       │       ├── MqttMiniBroker.cs       # 迷你 MQTT broker（中控当服务端）
+│       │       └── MqttPresenceSensor.cs   # MQTT 人体存在传感器
+│       ├── Common/                    # PacketBuilder / ResponseParser / MqttProtocol
 │       ├── DeviceManager.cs           # 设备管理器
 │       ├── CrestronDeviceLibrary.csproj  # VS .NET 4.7.2 + SDK 2.21.274
-│       └── Samples/                   # SIMPL+ 薄壳 .usp（单台/冗余）+ 有效 .clz
-│           ├── AudioMatrix_StageCraft.usp / .ush
-│           ├── Biamp_Tesira.usp / .ush
+│       └── Samples/                   # SIMPL+ 薄壳 .usp（命名=设备类型_品牌型号）+ 有效 .clz
+│           ├── AudioMatrix_StageCraft.usp          # 符号名 "AudioMatrix_StageCraft"
+│           ├── AudioMatrix_BiampTesira.usp         # 符号名 "Biamp_Tesira"
+│           ├── AudioMatrix_TendZone7216.usp        # 符号名 "tend_7216"
+│           ├── Cam_SonyVisca.usp                   # 符号名 "CAM_SONY_VISCA"
+│           ├── MqttPresenceSensor.usp              # 符号名 "MQTT_PresenceSensor"
 │           ├── Redundant_AudioMatrix_StageCraft.usp
-│           ├── Redundant_Biamp_Tesira.usp
-│           ├── CAM_SONY_VISCA.usp
+│           ├── Redundant_AudioMatrix_BiampTesira.usp
 │           └── CrestronDeviceLibrary.clz  # 4 代有效库（SPlsWork/ 编译工作区）
 ├── 3-Series/                          # ★ 3 系列工程（MC3 运行库）
 │   ├── CrestronDeviceLibrary.sln      # 3 代解决方案
 │   └── CrestronDeviceLibrary/         # 通过 <link> 共享 4-Series 源码编译
 ├── scripts-tools/                     # 调试工具脚本（mc3 console/errlog、抓日志等）
 ├── packages/                          # 根/各工程 NuGet 还原包
-└── CrestronDeviceLibrary.sln          # （已删除，避免与 4/3 代混淆）
+└── README.md
 ```
+
+> 命名约定：`.cs` 类文件按职能分子目录（`Devices\Audio|Camera|Mqtt`），`.usp` 文件名 = **设备类型_品牌型号**（`AudioMatrix_`/`Cam_`/`Mqtt` 前缀；冗余版最前加 `Redundant_`）。`.usp` 的 `#SYMBOL_NAME`（工具箱里显示的符号名）保持旧名不变，因此 **SIMPL Windows 已接线符号无需重拖**。
 
 > `Samples/` 目录在 `4-Series/CrestronDeviceLibrary/Samples/`（不在仓库根）。三处同步指：SIMPL 工程目录、桌面测试目录、此 Samples 目录。
 
@@ -108,6 +118,21 @@ VTP 触控面板 ── joins ── SIMPL Windows 程序 (Demo.smw)
 > 注意：过时原宏 `AudioMatrx_IPS_Libra.usp` 声称"UDP 50000 + `set:/get:` 命令"，
 > 实测设备并不响应。**真实协议是 TCP 1698**（原宏仅作参考）。
 
+## TendZone（东微）7216 协议要点（双 TCP 双协议）
+
+`TendZoneMatrix` 用**两条独立 TCP 连接**承载两套协议（`.usp` 由 `ConfigurePorts(ip, controlPort, matrixPort)` 配置，单端口设备两端口填同值）：
+
+**1. ASCII 控制连接**（`';'` 结尾）：电平/静音/订阅/音量表/预设
+- 命令：`set|gain_82|1|mute:true;` / `set|gain_82|1|step:1;` / `set|gain_82|1|gain:-7;`
+- 音量表：`get|meter_85|1|level;`；预设：`LOADP n#`；订阅：`set|report|enable:true;`
+- 应答：`0|report|gain_82|1|gain:2.5,mute:true;` / `0|get|meter_85|13|level:-120.0;`
+
+**2. 二进制矩阵连接**（帧 `82 7D ... 7D 82`，含 0x00 必须 C# 直连）：登录 + 混音路由读/写
+- 登录：`82 7D 01 00 02 01 01 01 05 00 "admin" 7D 82`
+- 路由读应答：`82 7D 00 00 03 08 01 80 11 00 [out-1] [16字节路由] 7D 82`
+
+模块名 `gain_82/83`、`meter_85/86` 由东微配置软件生成，做成 `.usp` 参数。
+
 ## 配置参数（在 `.usp` 文件头部改）
 
 ```simpl+
@@ -157,6 +182,8 @@ matrix.StartLevelPolling(250);        // 电平/音量表/静音 轮询（250ms 
 | 直连后设备无响应 | 旧 TCP/IP Client 符号占着设备连接 | 删 .smw 里的 TCP/IP Client 符号 |
 | 路由高亮错乱 | 路由数据读错偏移 | `body[8]`=输出号，`body[9..24]`=路由 |
 | `Error 1307 Variables must be declared before array declarations` | SIMPL+ 单变量声明在数组之后 | 单变量移到所有数组声明之前 |
+| `Error 1002 Missing ')'`（报错位语法却正确） | C# 类有**同名重载方法**，SIMPL+ 编译器不支持 | 接口要求的版本留原名，另一版改名（如 `ConfigurePorts`），对照同目录能编的宏数同名方法 |
+| `tmpXXX.tmp(...): warning CS0162`（指向 Temp 临时文件） | Crestron SDK 打包目标自动生成代码的固有警告 | **与项目源码无关，直接忽略** |
 
 **SSH 直连调试**（推荐，比截图快得多）：中控处理器开 SSH 后可用 paramiko 直连，
 `progstop -p:01` / `progstart -p:01` 控制程序，console 里能实时看到 `CrestronConsole.PrintLine` 输出。

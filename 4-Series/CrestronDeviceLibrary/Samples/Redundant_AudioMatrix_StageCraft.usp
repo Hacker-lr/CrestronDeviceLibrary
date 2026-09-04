@@ -10,38 +10,73 @@
     - 反馈只转发当前激活(leader)设备，故 VTP 引脚与单台完全一致；
     - 额外提供（引脚在符号最末尾，不挤占单台版任何 join）：主用在线 primary_online_fb / 备用在线 backup_online_fb + 状态文本 status_tx$[1]（反馈哪台掉线）。
 
-  协议/规则/引脚布局：同 AudioMatrix_StageCraft.usp。
+  协议/规则/引脚布局：同 AudioMatrix_StageCraft.usp（id 映射见 fnDigital/fnAnalog/fnSerial）。
   库引用：#USER_SIMPLSHARP_LIBRARY "CrestronDeviceLibrary"
+
+#HELP_BEGIN
+Redundant_AudioMatrix_StageCraft - dual StageCraft matrix with leader/follower.
+
+PARAMETERS:
+  PrimaryDeviceIP - IP of primary (preferred) StageCraft matrix.
+  BackupDeviceIP  - IP of backup StageCraft matrix.
+  TcpPort         - TCP port both devices listen on (default 1698).
+
+The controller connects to BOTH devices and routes commands to whichever is online.
+#HELP_END
+
 *******************************************************************************************/
 
 #SYMBOL_NAME "Redundant_AudioMatrix_StageCraft"
 #DEFINE_CONSTANT CH 16
-
-// =====================================================================
-//  [主用 / 备用设备连接配置] 改这里
-// =====================================================================
-#DEFINE_CONSTANT PRIMARY_IP    "192.168.0.222"
-#DEFINE_CONSTANT BACKUP_IP     "192.168.0.223"
-#DEFINE_CONSTANT DEVICE_PORT   1698
 
 #DEFAULT_VOLATILE
 #ENABLE_TRACE
 
 #USER_SIMPLSHARP_LIBRARY "CrestronDeviceLibrary"
 
-// ===== 变量区 =====
-STRING primary_ip$[32];
-STRING backup_ip$[32];
+// =====================================================================
+//  外部可编辑参数（SIMPL Windows 符号属性面板直接填，改后需重编译生效）
+//  参数声明必须放在「#USER_SIMPLSHARP_LIBRARY 之后、所有 I/O 信号之前」。
+//  ------------------------------------------------------------------
+//  参数清单：
+//    PrimaryDeviceIP   主用 StageCraft 矩阵 IP
+//    BackupDeviceIP    备用 StageCraft 矩阵 IP
+//    TcpPort           TCP 端口（StageCraft 默认 1698）
+// =====================================================================
+STRING_PARAMETER PrimaryDeviceIP[32];
+STRING_PARAMETER BackupDeviceIP[32];
+INTEGER_PARAMETER TcpPort;
+#BEGIN_PARAMETER_PROPERTIES PrimaryDeviceIP
+   propValidUnits = unitString;
+   propDefaultUnit = unitString;
+   propDefaultValue = "192.168.0.222";
+   propShortDescription = "Primary StageCraft matrix IP";
+#END_PARAMETER_PROPERTIES
+#BEGIN_PARAMETER_PROPERTIES BackupDeviceIP
+   propValidUnits = unitString;
+   propDefaultUnit = unitString;
+   propDefaultValue = "192.168.0.223";
+   propShortDescription = "Backup StageCraft matrix IP";
+#END_PARAMETER_PROPERTIES
+#BEGIN_PARAMETER_PROPERTIES TcpPort
+   propValidUnits = unitDecimal;
+   propDefaultUnit = unitDecimal;
+   propBounds = 1d, 65535d;
+   propDefaultValue = 1698d;
+   propShortDescription = "TCP port (default 1698)";
+#END_PARAMETER_PROPERTIES
+
+// ===== 变量区（SIMPL+ 规则：所有单个变量必须在所有数组声明之前） =====
 INTEGER _selOutN;            // 当前选中的输出（切回矩阵页时同步给 C#）
 
-// 输入变量
-DIGITAL_INPUT mode1, mode2, mode3, mode4, mode5, allmute, _skip_;
+// 输入变量（首行 3 个前导 _skip_ 对应 3 个参数的 faceplate 槽位）
+DIGITAL_INPUT _skip_, _skip_, _skip_, mode1, mode2, mode3, mode4, mode5, allmute, _skip_;
 DIGITAL_INPUT mixpage_fb, mixin_button_fb, mixout_button_fb;
 // 输出变量
-DIGITAL_OUTPUT mode1fb, mode2fb, mode3fb, mode4fb, mode5fb, allmuteFb, _skip_;
+DIGITAL_OUTPUT _skip_, _skip_, _skip_, mode1fb, mode2fb, mode3fb, mode4fb, mode5fb, allmuteFb, _skip_;
 DIGITAL_OUTPUT _skip_, _skip_, _skip_;
 
-// ===== 数组区（与单台 AudioMatrix_StageCraft.usp 完全一致） =====
+// ===== 数组区（与单台 AudioMatrix_StageCraft.usp 完全一致，便于 VTP 复用同一套 join） =====
 DIGITAL_INPUT Matrx_IN[CH], _skip_;
 DIGITAL_INPUT INmute[CH], _skip_;
 DIGITAL_INPUT Matrx_OUT[CH], _skip_;
@@ -86,10 +121,10 @@ DIGITAL_OUTPUT _reserved3[1];                         // 真数组占位：防 p
 STRING_OUTPUT  status_tx$[1];                         // [1]=状态文本（人读，如"主用掉线，已切备用"）
 STRING_OUTPUT  _reserved4$[1];                        // 真数组占位：防 status_tx$ 被折叠成 [#]
 
-// ---------------- 库对象 ----------------
+// ---------------- 库对象（声明即实例化，不要写 new） ----------------
 RedundantStageCraftMatrix rmatrix;
 
-// ---------------- 主函数 ----------------
+// ---------------- 主函数：绑定输出委托 + 配置 + 连接 ----------------
 Function Main()
 {
     RegisterDelegate(rmatrix, DigitalFb,       fnDigital);
@@ -99,28 +134,28 @@ Function Main()
     RegisterDelegate(rmatrix, BackupOnlineFb,  fnBackupOnline);
     RegisterDelegate(rmatrix, StatusTextFb,    fnStatusText);
 
-    primary_ip$ = PRIMARY_IP;
-    backup_ip$  = BACKUP_IP;
-    rmatrix.ConfigurePrimary(primary_ip$, DEVICE_PORT);
-    rmatrix.ConfigureBackup(backup_ip$, DEVICE_PORT);
+    rmatrix.ConfigurePrimary(PrimaryDeviceIP, TcpPort);
+    rmatrix.ConfigureBackup(BackupDeviceIP, TcpPort);
 
-    rmatrix.Start();               // 同时连接主备，命令镜像到两端
-    // 轮询改为页面驱动：进入对应页面时 CHANGE 事件里调 SetPollMode(1/2/3)，离开调 SetPollMode(0)
+    rmatrix.Start();               // 同时连接主备 + 开始轮询，命令镜像到两端
+    // 注意：页面轮询由下方 CHANGE 事件驱动（进页面 SetPollMode(1/2/3)，离页面 SetPollMode(0)）
     WaitForInitializationComplete();
 }
 
-// ---------------- 静音 ----------------
+// ---------------- 静音（输入/输出/全静音） ----------------
 PUSH INmute  { INTEGER n; n = GetLastModifiedArrayIndex(); rmatrix.ToggleInputMute(n); }
 PUSH OUTmute { INTEGER n; n = GetLastModifiedArrayIndex(); rmatrix.ToggleOutputMute(n); }
 PUSH allmute { rmatrix.AllMute(1); }
 
-// ---------------- 电平加减 ----------------
+// ---------------- 电平加减（输入/输出，长按步进） ----------------
 PUSH Matrx_IN_audio_jia  { INTEGER n; n = GetLastModifiedArrayIndex(); rmatrix.InputLevelAdd(n); }
 PUSH Matrx_IN_audio_jian { INTEGER n; n = GetLastModifiedArrayIndex(); rmatrix.InputLevelSub(n); }
 PUSH Matrx_OUT_audio_jia { INTEGER n; n = GetLastModifiedArrayIndex(); rmatrix.OutputLevelAdd(n); }
 PUSH Matrx_OUT_audio_jian{ INTEGER n; n = GetLastModifiedArrayIndex(); rmatrix.OutputLevelSub(n); }
 
-// ---------------- 混音路由 ----------------
+// ---------------- 混音路由（先选输出，再点输入切换交叉点） ----------------
+// PUSH Matrx_OUT 追踪当前选中的输出（用 SIMPL+ 全局变量 _selOutN 记录）
+// SIMPL+ 里 DIGITAL_OUTPUT 不可读，所以用 PUSH 副作用追踪。
 PUSH Matrx_OUT
 {
     INTEGER n;
@@ -134,19 +169,19 @@ PUSH Matrx_IN  { INTEGER n; n = GetLastModifiedArrayIndex(); rmatrix.ToggleRoute
 CHANGE Level_analogIN  { INTEGER n; n = GetLastModifiedArrayIndex(); rmatrix.SetInputLevelAnalog(n, Level_analogIN[n]); }
 CHANGE Level_analogOUT { INTEGER n; n = GetLastModifiedArrayIndex(); rmatrix.SetOutputLevelAnalog(n, Level_analogOUT[n]); }
 
-// ---------------- 预设 ----------------
+// ---------------- 预设（互斥：按一个亮一个，其余灭） ----------------
 PUSH mode1 { rmatrix.LoadPreset(13); mode1fb=1; mode2fb=0; mode3fb=0; mode4fb=0; mode5fb=0; }
 PUSH mode2 { rmatrix.LoadPreset(13); mode1fb=0; mode2fb=1; mode3fb=0; mode4fb=0; mode5fb=0; }
 PUSH mode3 { rmatrix.LoadPreset(3);  mode1fb=0; mode2fb=0; mode3fb=1; mode4fb=0; mode5fb=0; }
 PUSH mode4 { rmatrix.LoadPreset(4);  mode1fb=0; mode2fb=0; mode3fb=0; mode4fb=1; mode5fb=0; }
 PUSH mode5 { rmatrix.LoadPreset(5);  mode1fb=0; mode2fb=0; mode3fb=0; mode4fb=0; mode5fb=1; }
 
-// ---------------- 页面驱动轮询（进入页面启动，离开停止） ----------------
+// ---------------- 页面打开/按钮按下时启动对应轮询，离开停止（页面驱动轮询） ----------------
 CHANGE mixpage_fb
 {
     IF(mixpage_fb)
     {
-        // ★ SIMPL+ 里 DIGITAL_OUTPUT 不可读，无法扫描 MatrxOUTFb 当前值高亮哪路。
+        // SIMPL+ 里 DIGITAL_OUTPUT 不可读，无法扫描 MatrxOUTFb 当前值。
         // 改用 _selOutN 全局变量追踪（PUSH Matrx_OUT 时记录），进入页面同步给 C#。
         IF (_selOutN = 0)
         {
@@ -236,7 +271,7 @@ CALLBACK FUNCTION fnDigital(INTEGER id, INTEGER v)
 }
 
 // =====================================================================
-//  回调：模拟反馈路由
+//  回调：模拟反馈路由（电平 / 音量表）
 // =====================================================================
 CALLBACK FUNCTION fnAnalog(INTEGER id, INTEGER v)
 {
@@ -259,7 +294,7 @@ CALLBACK FUNCTION fnAnalog(INTEGER id, INTEGER v)
 }
 
 // =====================================================================
-//  回调：串口显示文本路由（1..32 -> level_tx$）
+//  回调：串口反馈路由（电平文本，id 1..32 -> level_tx$）
 // =====================================================================
 CALLBACK FUNCTION fnSerial(INTEGER id, STRING text$)
 {
@@ -270,17 +305,17 @@ CALLBACK FUNCTION fnSerial(INTEGER id, STRING text$)
 }
 
 // =====================================================================
-//  回调：冗余状态反馈（新增）
-//    PrimaryOnlineFb / BackupOnlineFb：1=在线 0=掉线（直接看出哪台挂了）
-//    StatusTextFb：人读状态文本（主备状态一目了然）
+//  回调：冗余状态（哪个在线 / 状态文本）
+//    PrimaryOnlineFb / BackupOnlineFb：1=在线 0=掉线
+//    StatusTextFb：人读状态文本（如"主用掉线，已切备用"）
 // =====================================================================
 CALLBACK FUNCTION fnPrimaryOnline(INTEGER id, INTEGER v)
 {
-    primary_online_fb[1] = v;   // 主用在线：1=在线 0=掉线
+    primary_online_fb[1] = v;   // 1=在线 0=掉线
 }
 CALLBACK FUNCTION fnBackupOnline(INTEGER id, INTEGER v)
 {
-    backup_online_fb[1] = v;   // 备用在线：1=在线 0=掉线
+    backup_online_fb[1] = v;   // 1=在线 0=掉线
 }
 CALLBACK FUNCTION fnStatusText(INTEGER id, STRING text$)
 {

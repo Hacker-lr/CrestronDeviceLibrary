@@ -1,0 +1,322 @@
+/*******************************************************************************************
+  Biamp Tesira  - SIMPL+ 
+   C#  CrestronDeviceLibrary  BiampTesiraMatrix 
+   AudioMatrix_StageCraft C#  TCP + 
+  Tesira Text ProtocolTTP ASCII telnetTCP 23 CR/LF
+   skill CRLFSIMPL+  new
+  Tesira (.tmf) DSP  Instance Tag
+   C#  subscribe levels/mutes/meter/
+            ///Meter 
+   AudioMatrix_StageCraft // List2 
+             VTP  join
+   #USER_SIMPLSHARP_LIBRARY CrestronDeviceLibrary.clz
+
+#HELP_BEGIN
+Biamp_Tesira controller - Tesira AV DSP IP/network driver.
+
+PARAMETERS:
+  DeviceIPAddress - Tesira processor IP address.
+  TcpPort         - TCP port (Telnet default 23).
+  DeviceUsername  - Login username (default 'default').
+  DevicePassword  - Login password (default 'default').
+  InputLevelTag   - Instance Tag of Input Level block ('none' = skip).
+  OutputLevelTag  - Instance Tag of Output Level block.
+  MatrixMixerTag  - Instance Tag of Matrix Mixer block.
+  InputMeterTag   - Instance Tag of Input AudioMeter block.
+  OutputMeterTag  - Instance Tag of Output AudioMeter block.
+#HELP_END
+
+*******************************************************************************************/
+
+#SYMBOL_NAME "Biamp_Tesira"
+#DEFINE_CONSTANT CH 16
+
+
+
+// =====================================================================
+//    SIMPL Windows   Properties/ 
+//     .usp/.clz  SIMPL 
+//  ------------------------------------------------------------------
+//  
+//    DeviceIPAddress         IP 
+//    TcpPort       TCP Tesira Telnet  23
+//    DeviceUsername  Tesira  "default"
+//    DevicePassword  Tesira  "default"
+//    InputLevelTag     / Instance Tag Level1
+//    OutputLevelTag    / Instance Tag Level2
+//    MatrixMixerTag         Instance Tag Mixer1
+//    InputMeterTag      Instance Tag AudioMeter1
+//    OutputMeterTag     Instance Tag AudioMeter2
+//  Instance Tag  "none"  tag  Tesira 
+//        SESSION get aliases 
+// =====================================================================
+#DEFAULT_VOLATILE
+#ENABLE_TRACE
+
+#USER_SIMPLSHARP_LIBRARY "CrestronDeviceLibrary"
+
+STRING_PARAMETER DeviceIPAddress[32];
+INTEGER_PARAMETER TcpPort;
+#BEGIN_PARAMETER_PROPERTIES DeviceIPAddress
+   propValidUnits = unitString;
+   propDefaultUnit = unitString;
+   propDefaultValue = "192.168.0.24";
+   propShortDescription = "Tesira processor IP address";
+#END_PARAMETER_PROPERTIES
+#BEGIN_PARAMETER_PROPERTIES TcpPort
+   propValidUnits = unitDecimal;
+   propDefaultUnit = unitDecimal;
+   propBounds = 1d, 65535d;
+   propDefaultValue = 23d;
+   propShortDescription = "TCP port (Telnet default 23)";
+#END_PARAMETER_PROPERTIES
+
+
+
+
+STRING_PARAMETER DeviceUsername[32];
+STRING_PARAMETER DevicePassword[32];
+STRING_PARAMETER InputLevelTag[50];
+STRING_PARAMETER OutputLevelTag[50];
+STRING_PARAMETER MatrixMixerTag[50];
+STRING_PARAMETER InputMeterTag[50];
+STRING_PARAMETER OutputMeterTag[50];
+#BEGIN_PARAMETER_PROPERTIES DeviceUsername
+   propValidUnits = unitString;
+   propDefaultUnit = unitString;
+   propDefaultValue = "default";
+   propShortDescription = "Login username";
+#END_PARAMETER_PROPERTIES
+#BEGIN_PARAMETER_PROPERTIES DevicePassword
+   propValidUnits = unitString;
+   propDefaultUnit = unitString;
+   propDefaultValue = "default";
+   propShortDescription = "Login password";
+#END_PARAMETER_PROPERTIES
+#BEGIN_PARAMETER_PROPERTIES InputLevelTag
+   propValidUnits = unitString;
+   propDefaultUnit = unitString;
+   propDefaultValue = "Level1";
+   propShortDescription = "Input Level block Instance Tag";
+#END_PARAMETER_PROPERTIES
+#BEGIN_PARAMETER_PROPERTIES OutputLevelTag
+   propValidUnits = unitString;
+   propDefaultUnit = unitString;
+   propDefaultValue = "Level2";
+   propShortDescription = "Output Level block Instance Tag";
+#END_PARAMETER_PROPERTIES
+#BEGIN_PARAMETER_PROPERTIES MatrixMixerTag
+   propValidUnits = unitString;
+   propDefaultUnit = unitString;
+   propDefaultValue = "Mixer1";
+   propShortDescription = "Matrix Mixer block Instance Tag";
+#END_PARAMETER_PROPERTIES
+#BEGIN_PARAMETER_PROPERTIES InputMeterTag
+   propValidUnits = unitString;
+   propDefaultUnit = unitString;
+   propDefaultValue = "AudioMeter1";
+   propShortDescription = "Input AudioMeter block Instance Tag";
+#END_PARAMETER_PROPERTIES
+#BEGIN_PARAMETER_PROPERTIES OutputMeterTag
+   propValidUnits = unitString;
+   propDefaultUnit = unitString;
+   propDefaultValue = "AudioMeter2";
+   propShortDescription = "Output AudioMeter block Instance Tag";
+#END_PARAMETER_PROPERTIES
+
+// ===== SIMPL+ / =====
+INTEGER _selOutN;            //  C#
+
+// 
+DIGITAL_INPUT _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, mode1, mode2, mode3, mode4, mode5, allmute, _skip_;
+DIGITAL_INPUT mixpage_fb, mixin_button_fb, mixout_button_fb;
+// 
+DIGITAL_OUTPUT _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, mode1fb, mode2fb, mode3fb, mode4fb, mode5fb, allmuteFb, _skip_;
+DIGITAL_OUTPUT _skip_, _skip_, _skip_;
+
+// =====  4 Level  OUTmute / OUTmuteFb  =====
+DIGITAL_INPUT Matrx_IN[CH], _skip_;
+DIGITAL_INPUT INmute[CH], _skip_;
+DIGITAL_INPUT Matrx_OUT[CH], _skip_;
+DIGITAL_INPUT OUTmute[CH], _skip_;
+ANALOG_INPUT Level_analogIN[CH], _skip_;
+ANALOG_INPUT Level_analogOUT[CH], _skip_;
+ANALOG_INPUT _reserved[1];                        // dummy  Level_analogOUT  List2    CH 
+DIGITAL_INPUT Matrx_IN_audio_jia[CH];
+DIGITAL_INPUT Matrx_IN_audio_jian[CH];
+DIGITAL_INPUT Matrx_OUT_audio_jia[CH];
+DIGITAL_INPUT Matrx_OUT_audio_jian[CH];
+DIGITAL_INPUT _reserved2[1];                         // dummy  jian    CH  _skip_  List2  _reserved[1] 
+DIGITAL_OUTPUT MatrxINFb[CH], _skip_;
+DIGITAL_OUTPUT INmuteFb[CH], _skip_;
+DIGITAL_OUTPUT MatrxOUTFb[CH], _skip_;
+DIGITAL_OUTPUT OUTmuteFb[CH], _skip_;
+// ---- 143 List2  ----
+DIGITAL_OUTPUT _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_;
+DIGITAL_OUTPUT _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_;
+DIGITAL_OUTPUT _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_;
+DIGITAL_OUTPUT _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_;
+DIGITAL_OUTPUT _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_;
+DIGITAL_OUTPUT _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_;
+DIGITAL_OUTPUT _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_;
+DIGITAL_OUTPUT _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_, _skip_;
+DIGITAL_OUTPUT _skip_;                                //  _skip_ 65 
+ANALOG_OUTPUT Level_analogINFb[CH], _skip_;
+ANALOG_OUTPUT level_analogOUTFb[CH], _skip_;
+ANALOG_OUTPUT Meter_analogINFb[CH];
+ANALOG_OUTPUT Meter_analogOUTFb[CH];
+STRING_OUTPUT mix_tx[CH];
+STRING_OUTPUT level_tx$[32];  //  = 2*CHSIMPL+  2*CH  CH 
+
+
+// ----------------  new ----------------
+BiampTesiraMatrix matrix;
+
+// ----------------  +  +  +  ----------------
+Function Main()
+{
+    RegisterDelegate(matrix, DigitalFb,  fnDigital);  //  -> _fb 
+    RegisterDelegate(matrix, AnalogFb,   fnAnalog);   //  -> /
+    RegisterDelegate(matrix, SerialFb,   fnSerial);   //  -> 
+
+    matrix.ConfigureChannels(CH);
+
+    matrix.ConfigureTags(InputLevelTag, OutputLevelTag, MatrixMixerTag, InputMeterTag, OutputMeterTag);
+    matrix.ConfigureCredentials(DeviceUsername, DevicePassword);
+    matrix.Configure(DeviceIPAddress, TcpPort);        // IP + Telnet  23
+    matrix.Start();                             //  + Telnet  +  + 
+    WaitForInitializationComplete();
+}
+
+// ----------------  ----------------
+PUSH INmute  { INTEGER n; n = GetLastModifiedArrayIndex(); matrix.ToggleInputMute(n); }
+PUSH OUTmute { INTEGER n; n = GetLastModifiedArrayIndex(); matrix.ToggleOutputMute(n); }
+PUSH allmute { matrix.AllMute(1); }
+
+// ----------------  ----------------
+PUSH Matrx_IN_audio_jia  { INTEGER n; n = GetLastModifiedArrayIndex(); matrix.InputLevelAdd(n); }
+PUSH Matrx_IN_audio_jian { INTEGER n; n = GetLastModifiedArrayIndex(); matrix.InputLevelSub(n); }
+PUSH Matrx_OUT_audio_jia { INTEGER n; n = GetLastModifiedArrayIndex(); matrix.OutputLevelAdd(n); }
+PUSH Matrx_OUT_audio_jian{ INTEGER n; n = GetLastModifiedArrayIndex(); matrix.OutputLevelSub(n); }
+
+// ----------------  ----------------
+PUSH Matrx_OUT
+{
+    INTEGER n;
+    n = GetLastModifiedArrayIndex();
+    _selOutN = n;
+    matrix.SelectOutput(n);
+}
+PUSH Matrx_IN  { INTEGER n; n = GetLastModifiedArrayIndex(); matrix.ToggleRoute(n); }
+
+// ----------------  -> C#  dB  ----------------
+CHANGE Level_analogIN  { INTEGER n; n = GetLastModifiedArrayIndex(); matrix.SetInputLevelAnalog(n, Level_analogIN[n]); }
+CHANGE Level_analogOUT { INTEGER n; n = GetLastModifiedArrayIndex(); matrix.SetOutputLevelAnalog(n, Level_analogOUT[n]); }
+
+// ----------------  ----------------
+PUSH mode1 { matrix.LoadPreset(1);  mode1fb=1; mode2fb=0; mode3fb=0; mode4fb=0; mode5fb=0; }
+PUSH mode2 { matrix.LoadPreset(2);  mode1fb=0; mode2fb=1; mode3fb=0; mode4fb=0; mode5fb=0; }
+PUSH mode3 { matrix.LoadPreset(3);  mode1fb=0; mode2fb=0; mode3fb=1; mode4fb=0; mode5fb=0; }
+PUSH mode4 { matrix.LoadPreset(4);  mode1fb=0; mode2fb=0; mode3fb=0; mode4fb=1; mode5fb=0; }
+PUSH mode5 { matrix.LoadPreset(5);  mode1fb=0; mode2fb=0; mode3fb=0; mode4fb=0; mode5fb=1; }
+
+// ---------------- / ----------------
+CHANGE mixpage_fb
+{
+    INTEGER n;
+    IF(mixpage_fb)
+    {
+        // SIMPL+  DIGITAL_OUTPUT  MatrxOUTFb 
+        //  _selOutN PUSH Matrx_OUT  C#
+        IF (_selOutN = 0)
+        {
+            matrix.SelectOutput(1);
+        }
+        ELSE
+        {
+            matrix.SelectOutput(_selOutN);
+        }
+    }
+}
+
+// =====================================================================
+//  id  BiampTesiraMatrix Fb* 
+// =====================================================================
+CALLBACK FUNCTION fnDigital(INTEGER id, INTEGER v)
+{
+    IF (id>=1 && id<=CH)
+    {
+        INmuteFb[id]=v;
+    }
+    ELSE IF (id>CH && id<=2*CH)
+    {
+        OUTmuteFb[id-CH]=v;
+    }
+    ELSE IF (id>2*CH && id<=3*CH)
+    {
+        MatrxINFb[id-2*CH]=v;
+    }
+    ELSE IF (id>3*CH && id<=4*CH)
+    {
+        MatrxOUTFb[id-3*CH]=v;
+    }
+    ELSE IF (id=4*CH+1)
+    {
+        mode1fb=v;
+    }
+    ELSE IF (id=4*CH+2)
+    {
+        mode2fb=v;
+    }
+    ELSE IF (id=4*CH+3)
+    {
+        mode3fb=v;
+    }
+    ELSE IF (id=4*CH+4)
+    {
+        mode4fb=v;
+    }
+    ELSE IF (id=4*CH+5)
+    {
+        mode5fb=v;
+    }
+    ELSE IF (id=4*CH+6)
+    {
+        allmuteFb=v;
+    }
+}
+
+// =====================================================================
+//  
+// =====================================================================
+CALLBACK FUNCTION fnAnalog(INTEGER id, INTEGER v)
+{
+    IF (id>=1 && id<=CH)
+    {
+        Level_analogINFb[id]=v;
+    }
+    ELSE IF (id>CH && id<=2*CH)
+    {
+        level_analogOUTFb[id-CH]=v;
+    }
+    ELSE IF (id>2*CH && id<=3*CH)
+    {
+        Meter_analogINFb[id-2*CH]=v;
+    }
+    ELSE IF (id>3*CH && id<=4*CH)
+    {
+        Meter_analogOUTFb[id-3*CH]=v;
+    }
+}
+
+// =====================================================================
+//  1..2*CH -> level_tx$
+// =====================================================================
+CALLBACK FUNCTION fnSerial(INTEGER id, STRING text$)
+{
+    IF (id>=1 && id<=2*CH)
+    {
+        level_tx$[id]=text$;
+    }
+}
+

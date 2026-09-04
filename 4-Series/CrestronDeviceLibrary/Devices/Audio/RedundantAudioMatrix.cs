@@ -64,6 +64,13 @@ namespace CrestronDeviceLibrary.Devices
     /// <summary>
     /// 泛型双机热备控制器。0=主用(Primary)，1=备用(Backup)。
     /// SIMPL+ 不能直接实例化泛型类，故由具体子类（RedundantBiampMatrix / RedundantStageCraftMatrix）继承。
+    ///
+    /// 运行机制速览：
+    ///   命令下发 → Mirror() 镜像到两台在线设备；
+    ///   设备反馈 → WireDevice() 里只转发 leader 的数据到 SIMPL+（避免两台冲突），
+    ///              同时 SyncToPeer() 把该台改动同步到对端（保持两台配置一致）；
+    ///   掉线切换 → OnConnectionChanged() 立即把 leader 切到在线端（用户无感）；
+    ///   恢复补同步 → 上线后延迟 2s Resync() 把期望状态全量补发给刚恢复的设备。
     /// </summary>
     public class RedundantAudioMatrix<T> where T : IMatrixControl, new()
     {
@@ -260,13 +267,15 @@ namespace CrestronDeviceLibrary.Devices
         // =====================================================================
         //  内部：镜像 / 反馈转发 / leader 选举 / 重同步
         // =====================================================================
-        /// <summary>把动作镜像到两端在线设备（离线端跳过，待恢复后重同步）。</summary>
+        /// <summary>把动作镜像到两端在线设备（离线端跳过，待恢复后由 Resync 重同步补齐）。</summary>
+        /// <param name="act">要对每台在线设备执行的动作（lambda 接收设备实例）。两端各自独立执行，互不阻塞。</param>
         protected void Mirror(Action<T> act)
         {
             if (_online[0]) act(_primary);
             if (_online[1]) act(_backup);
         }
 
+        /// <summary>把模拟量钳制到 ushort 合法范围 [0, 65535]（防溢出回绕）。</summary>
         private static ushort ClampAnalog(int v)
         {
             if (v < 0) v = 0;
@@ -274,6 +283,11 @@ namespace CrestronDeviceLibrary.Devices
             return (ushort)v;
         }
 
+        /// <summary>
+        /// 给一台设备接线：注册其数字/模拟/串口/连接状态回调。
+        /// idx=0 主用，idx=1 备用。反馈只转发「当前 leader」的数据（避免两台打架），
+        /// 同时把每台设备的本地改动经 SyncToPeer 同步到对端，保持两台配置一致。
+        /// </summary>
         private void WireDevice(int idx, T dev)
         {
             dev.DigitalFb = (id, v) => {
@@ -483,6 +497,9 @@ namespace CrestronDeviceLibrary.Devices
     /// <summary>Biamp Tesira 双机热备（具体子类，供 SIMPL+ 实例化）。</summary>
     public class RedundantBiampMatrix : RedundantAudioMatrix<BiampTesiraMatrix>
     {
+        // 显式无参构造：SIMPL+ 实例化具体子类时更稳妥（不依赖编译器隐式构造）。
+        public RedundantBiampMatrix() { }
+
         public void ConfigureTags(SimplSharpString inLevelTag, SimplSharpString outLevelTag,
             SimplSharpString mixerTag, SimplSharpString inMeterTag, SimplSharpString outMeterTag)
         {

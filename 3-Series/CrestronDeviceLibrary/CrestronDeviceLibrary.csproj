@@ -66,27 +66,40 @@
     <Compile Include="Properties\AssemblyInfo.cs" />
     <None Include="Properties\ControlSystem.cfg" />
     <!-- 共享源码：链接引用 4代工程同一批 .cs（一份源码两代编译） -->
-    <Compile Include="..\..\4-Series\CrestronDeviceLibrary\Devices\RedundantAudioMatrix.cs">
-      <Link>Devices\RedundantAudioMatrix.cs</Link>
+    <Compile Include="..\..\4-Series\CrestronDeviceLibrary\Devices\Audio\RedundantAudioMatrix.cs">
+      <Link>Devices\Audio\RedundantAudioMatrix.cs</Link>
     </Compile>
-    <Compile Include="..\..\4-Series\CrestronDeviceLibrary\Devices\BiampTesiraMatrix.cs">
-      <Link>Devices\BiampTesiraMatrix.cs</Link>
+    <Compile Include="..\..\4-Series\CrestronDeviceLibrary\Devices\Audio\BiampTesiraMatrix.cs">
+      <Link>Devices\Audio\BiampTesiraMatrix.cs</Link>
     </Compile>
-    <Compile Include="..\..\4-Series\CrestronDeviceLibrary\Devices\StageCraftMatrix.cs">
-      <Link>Devices\StageCraftMatrix.cs</Link>
+    <Compile Include="..\..\4-Series\CrestronDeviceLibrary\Devices\Audio\StageCraftMatrix.cs">
+      <Link>Devices\Audio\StageCraftMatrix.cs</Link>
+    </Compile>
+    <Compile Include="..\..\4-Series\CrestronDeviceLibrary\Devices\Audio\TendZoneMatrix.cs">
+      <Link>Devices\Audio\TendZoneMatrix.cs</Link>
     </Compile>
     <!-- VISCA：CAM_SONY_VISCA.usp 依赖 SonyViscaCamera + Common 两个工具类 + DeviceManager -->
     <Compile Include="..\..\4-Series\CrestronDeviceLibrary\DeviceManager.cs">
       <Link>DeviceManager.cs</Link>
     </Compile>
-    <Compile Include="..\..\4-Series\CrestronDeviceLibrary\Devices\SonyViscaCamera.cs">
-      <Link>Devices\SonyViscaCamera.cs</Link>
+    <Compile Include="..\..\4-Series\CrestronDeviceLibrary\Devices\Camera\SonyViscaCamera.cs">
+      <Link>Devices\Camera\SonyViscaCamera.cs</Link>
     </Compile>
     <Compile Include="..\..\4-Series\CrestronDeviceLibrary\Common\PacketBuilder.cs">
       <Link>Common\PacketBuilder.cs</Link>
     </Compile>
     <Compile Include="..\..\4-Series\CrestronDeviceLibrary\Common\ResponseParser.cs">
       <Link>Common\ResponseParser.cs</Link>
+    </Compile>
+    <!-- MQTT 人体存在传感器：迷你 broker + 传感器逻辑 -->
+    <Compile Include="..\..\4-Series\CrestronDeviceLibrary\Common\MqttProtocol.cs">
+      <Link>Common\MqttProtocol.cs</Link>
+    </Compile>
+    <Compile Include="..\..\4-Series\CrestronDeviceLibrary\Devices\Mqtt\MqttMiniBroker.cs">
+      <Link>Devices\Mqtt\MqttMiniBroker.cs</Link>
+    </Compile>
+    <Compile Include="..\..\4-Series\CrestronDeviceLibrary\Devices\Mqtt\MqttPresenceSensor.cs">
+      <Link>Devices\Mqtt\MqttPresenceSensor.cs</Link>
     </Compile>
   </ItemGroup>
   <Import Project="$(MSBuildBinPath)\Microsoft.CompactFramework.CSharp.targets" />
